@@ -1,0 +1,25 @@
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+dotenv.config();
+const cookieParser = require("cookie-parser");
+const jsonWebToken = require("jsonwebtoken");
+const helmet = require("helmet");
+const database = require("./config/database");
+database.connect();
+const port = process.env.PORT;
+const app = express();
+app.use(
+  cors({
+    origin: process.env.FE_URL,
+    credentials: true,
+  })
+);
+app.use(express.json());
+app.use(cookieParser());
+app.use(helmet());
+const router = require("./router/index.router");
+router(app);
+app.listen(port, () => {
+  console.log(`App listening on port ${port}`);
+});
