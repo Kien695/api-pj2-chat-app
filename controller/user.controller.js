@@ -31,10 +31,8 @@ module.exports.register = async (req, res) => {
     });
     user.save();
     const subject = "Mã OTP xác minh";
-    const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${
-      user.otp
-    }</b>. Thời hạn sử dụng là: ${Math.ceil(
-      (user.otp_expiry - Date.now()) / 60000
+    const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${verifyCode}</b>. Thời hạn sử dụng là: ${Math.ceil(
+      600000 / 60000
     )} phút`;
     const verifyEmail = await sendMail(email, subject, html);
 
@@ -209,10 +207,8 @@ module.exports.forgotPassword = async (req, res) => {
       { new: true }
     );
     const subject = "Mã OTP xác minh";
-    const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${
-      user.otp
-    }</b>. Thời hạn sử dụng là: ${Math.ceil(
-      (user.otp_expiry - Date.now()) / 60000
+    const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${verifyCode}</b>. Thời hạn sử dụng là: ${Math.ceil(
+      600000 / 60000
     )} phút`;
     const verifyEmail = await sendMail(email, subject, html);
     return res.json({
