@@ -4,7 +4,13 @@ const jwt = require("jsonwebtoken");
 const { sendMail } = require("../config/sendMail");
 const { generateAccessToken } = require("../utils/generateAccessToken");
 const { generateRefreshToken } = require("../utils/generateRefreshToken");
-
+const cloudinary = require("cloudinary").v2;
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.CLOUD_KEY,
+  api_secret: process.env.CLOUD_SECRET,
+  secure: true,
+});
 //register
 module.exports.register = async (req, res) => {
   try {
@@ -338,6 +344,84 @@ module.exports.refreshToken = async (req, res) => {
       data: {
         accessToken: newAccessToken,
       },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//user Detail
+module.exports.userDetail = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const user = await User.findById(userId).select("-password -refreshToken");
+    return res.status(200).json({
+      message: "Chi tiết người dùng",
+      error: false,
+      data: user,
+      success: true,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      success: false,
+      error: true,
+    });
+  }
+};
+//avatar user
+module.exports.userAvatar = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(400).json({
+        error: true,
+        success: false,
+      });
+    }
+    if (user.avatar_public_id) {
+      cloudinary.uploader.destroy(user.avatar_public_id);
+    }
+    user.avatar = req.body.avatar;
+    user.avatar_public_id = req.body.avatar_public_id;
+    await user.save();
+    return res.status(200).json({
+      message: "Cập nhật ảnh đại diện thành công",
+      error: false,
+      success: true,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//update user
+module.exports.updateUser = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+
+    const existUser = await User.findById(userId);
+    if (!existUser) {
+      return res.status(400).send("Tài khoản không được cập nhật");
+    }
+    // Cập nhật user
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: req.body },
+      { new: true }
+    );
+    return res.status(200).json({
+      message: "Chỉnh sửa tài khoản thành công",
+      error: false,
+      success: true,
+      user: updatedUser,
     });
   } catch (error) {
     return res.status(500).json({

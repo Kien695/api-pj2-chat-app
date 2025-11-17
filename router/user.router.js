@@ -19,4 +19,7 @@ router.post(
   controller.resetPassword
 );
 router.post("/refreshToken", controller.refreshToken);
+router.get("/getUser", middleware.auth, controller.userDetail);
+router.post("/updateAvatar", middleware.auth, controller.userAvatar);
+router.patch("/updateUser", middleware.auth, controller.updateUser);
 module.exports = router;

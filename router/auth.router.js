@@ -16,7 +16,5 @@ router.get(
   }),
   controller.login
 );
-router.get("/me", middleware.auth, (req, res) => {
-  res.json({ success: true, user: req.user });
-});
+
 module.exports = router;
