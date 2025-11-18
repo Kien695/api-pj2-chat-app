@@ -10,7 +10,7 @@ cloudinary.config({
 //upload one
 module.exports.uploadOne = async (req, res, next) => {
   if (!req.file) {
-    next();
+    return next();
   }
   const streamUpload = (req) => {
     return new Promise((resolve, reject) => {
@@ -27,8 +27,10 @@ module.exports.uploadOne = async (req, res, next) => {
   };
   try {
     let result = await streamUpload(req);
-    req.body.avatar = result.secure_url;
-    req.body.avatar = result.public_id;
+
+    req.body.image = result.secure_url;
+    req.body.image_id = result.public_id;
+    next();
   } catch (error) {
     console.error("Upload failed:", error);
     res.status(500).json({ message: "Upload failed", error });

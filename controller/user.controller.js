@@ -373,9 +373,10 @@ module.exports.userDetail = async (req, res) => {
   }
 };
 //avatar user
-module.exports.userAvatar = async (req, res) => {
+module.exports.userImage = async (req, res) => {
   try {
     const userId = res.locals.userId;
+    const type = req.body.type;
     const user = await User.findById(userId);
     if (!user) {
       return res.status(400).json({
@@ -383,16 +384,27 @@ module.exports.userAvatar = async (req, res) => {
         success: false,
       });
     }
-    if (user.avatar_public_id) {
-      cloudinary.uploader.destroy(user.avatar_public_id);
+    if (type == "avatar") {
+      if (user.avatar_public_id) {
+        cloudinary.uploader.destroy(user.avatar_public_id);
+      }
+      user.avatar = req.body.image || user.avatar;
+      user.avatar_public_id = req.body.image_id || user.avatar_public_id;
     }
-    user.avatar = req.body.avatar;
-    user.avatar_public_id = req.body.avatar_public_id;
+    if (type == "background") {
+      if (user.background_public_id) {
+        cloudinary.uploader.destroy(user.background_public_id);
+      }
+      user.background = req.body.image || user.background;
+      user.background_public_id =
+        req.body.image_id || user.background_public_id;
+    }
     await user.save();
     return res.status(200).json({
-      message: "Cập nhật ảnh đại diện thành công",
+      message: "Cập nhật thành công",
       error: false,
       success: true,
+      data: user,
     });
   } catch (error) {
     return res.status(500).json({
@@ -421,7 +433,7 @@ module.exports.updateUser = async (req, res) => {
       message: "Chỉnh sửa tài khoản thành công",
       error: false,
       success: true,
-      user: updatedUser,
+      data: updatedUser,
     });
   } catch (error) {
     return res.status(500).json({

@@ -19,6 +19,14 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    background: {
+      type: String,
+      default: "",
+    },
+    background_public_id: {
+      type: String,
+      default: "",
+    },
     date_of_birth: {
       type: Date,
       default: "",
@@ -27,6 +35,10 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
       unique: true,
+    },
+    gender: {
+      type: String,
+      default: "",
     },
     verify_email: {
       type: Boolean,
