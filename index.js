@@ -6,9 +6,10 @@ const cookieParser = require("cookie-parser");
 const jsonWebToken = require("jsonwebtoken");
 const helmet = require("helmet");
 const database = require("./config/database");
+const { app, server } = require("./socket/index");
 database.connect();
 const port = process.env.PORT;
-const app = express();
+// const app = express();
 app.use(
   cors({
     origin: process.env.FE_URL,
@@ -20,6 +21,6 @@ app.use(cookieParser());
 app.use(helmet());
 const router = require("./router/index.router");
 router(app);
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`App listening on port ${port}`);
 });
