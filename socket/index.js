@@ -4,7 +4,13 @@ const Chat = require("../model/chat.model");
 const { Server } = require("socket.io");
 const http = require("http");
 const { getUserDetail } = require("../helper/getUserFormToken");
-
+const cloudinary = require("cloudinary").v2;
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.CLOUD_KEY,
+  api_secret: process.env.CLOUD_SECRET,
+  secure: true,
+});
 const app = express();
 
 // socket connection
@@ -24,22 +30,46 @@ const onlineUser = new Set();
 io.on("connection", async (socket) => {
   const token = socket.handshake.auth.token;
   const user = await getUserDetail(token);
-
+  //message
   socket.on("CLIENT_SEND_MASSAGE", async (content) => {
+    const { message, images } = content;
+
+    let uploadsImages = [];
+    if (images && images.length > 0) {
+      for (const base64 of images) {
+        const result = await cloudinary.uploader.upload(base64, {
+          folder: "chat_app",
+        });
+
+        uploadsImages.push({
+          url: result.secure_url,
+          public_id: result.public_id,
+        });
+      }
+    }
     const chat = new Chat({
       user_id: user._id,
-      content: content,
+      content: message,
+      images: uploadsImages,
     });
     await chat.save();
     //trả data về client
     const payload = {
       user_id: user._id,
-      content: content,
+      content: message,
       avatar: user.avatar,
+      images: uploadsImages,
     };
     io.emit("SERVER_RETURN_MASSAGE", payload);
   });
-
+  //typing
+  socket.on("CLIENT_SEND_TYPING", async (type) => {
+    socket.broadcast.emit("SERVER_RETURN_TYPING", {
+      user_id: user._id,
+      type: type,
+      avatar: user.avatar,
+    });
+  });
   // const token = socket.handshake.auth.token;
   // //   get user detail
   // const user = await getUserDetail(token);
