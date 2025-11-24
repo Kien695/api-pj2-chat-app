@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const { sendMail } = require("../config/sendMail");
 const { generateAccessToken } = require("../utils/generateAccessToken");
 const { generateRefreshToken } = require("../utils/generateRefreshToken");
+const searchHelper = require("../helper/search");
 const cloudinary = require("cloudinary").v2;
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
@@ -434,6 +435,41 @@ module.exports.updateUser = async (req, res) => {
       error: false,
       success: true,
       data: updatedUser,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//get user
+module.exports.getUser = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const myUser = await User.findById(userId);
+
+    let find = { _id: { $ne: userId } };
+
+    // Search
+    const objectSearch = searchHelper(req.query);
+    if (objectSearch.$or) find.$or = objectSearch.$or;
+
+    const users = await User.find(find).select("-password -refresh_token");
+
+    // Gắn trạng thái pending nếu user có trong requestFriends
+    const dataWithStatus = users.map((u) => {
+      const isPending = myUser.requestFriends.some(
+        (rf) => rf.id.toString() === u._id.toString()
+      );
+      return { ...u.toObject(), friendStatus: isPending ? "pending" : "none" };
+    });
+
+    return res.status(200).json({
+      error: false,
+      success: true,
+      data: dataWithStatus,
     });
   } catch (error) {
     return res.status(500).json({

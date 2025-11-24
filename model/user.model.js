@@ -56,6 +56,24 @@ const userSchema = new mongoose.Schema(
       type: String,
     },
     otp_expiry: { type: Date },
+    requestFriends: [
+      {
+        id: String,
+        message: String,
+      },
+    ],
+    acceptFriends: [
+      {
+        id: String,
+        message: String,
+      },
+    ],
+    FriendList: [
+      {
+        user_id: String,
+        room_chat_id: String,
+      },
+    ],
   },
   {
     timestamps: true,

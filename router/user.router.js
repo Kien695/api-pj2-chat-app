@@ -31,4 +31,5 @@ router.put(
   controller.userImage
 );
 router.patch("/updateUser", middleware.auth, controller.updateUser);
+router.get("/getAllUser", middleware.auth, controller.getUser);
 module.exports = router;

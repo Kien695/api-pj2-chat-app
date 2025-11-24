@@ -70,6 +70,46 @@ io.on("connection", async (socket) => {
       avatar: user.avatar,
     });
   });
+
+  //add friend
+  socket.on("CLIENT_ADD_FRIEND", async (content) => {
+    const { userId, text } = content;
+    const myUserId = user._id;
+    //thêm id của A vào acceptFriend của B
+    const exitIdAinB = await User.findOne({
+      _id: userId,
+      "acceptFriends.id": myUserId,
+    });
+    if (!exitIdAinB) {
+      await User.updateOne(
+        {
+          _id: userId,
+        },
+        {
+          $push: { acceptFriends: { id: myUserId, message: text } },
+        }
+      );
+    }
+    const exitIdBinA = await User.findOne({
+      _id: myUserId,
+      "requestFriends.id": userId,
+    });
+    if (!exitIdBinA) {
+      await User.updateOne(
+        {
+          _id: myUserId,
+        },
+        {
+          $push: {
+            requestFriends: { id: userId, message: text },
+          },
+        }
+      );
+    }
+    socket.emit("SERVER_ADD_FRIEND_STATUS", {
+      status: "pending",
+    });
+  });
   // const token = socket.handshake.auth.token;
   // //   get user detail
   // const user = await getUserDetail(token);
