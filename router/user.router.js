@@ -32,4 +32,5 @@ router.put(
 );
 router.patch("/updateUser", middleware.auth, controller.updateUser);
 router.get("/getAllUser", middleware.auth, controller.getUser);
+router.get("/getAcceptFriend", middleware.auth, controller.friendInvite);
 module.exports = router;

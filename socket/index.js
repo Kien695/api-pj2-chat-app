@@ -106,9 +106,130 @@ io.on("connection", async (socket) => {
         }
       );
     }
-    socket.emit("SERVER_ADD_FRIEND_STATUS", {
+    socket.emit("SERVER_FRIEND_STATUS", {
+      userId: userId,
       status: "pending",
     });
+  });
+  //cancel add friend
+  socket.on("CLIENT_CANCEL_FRIEND", async (userId) => {
+    const myUserId = user._id;
+    //xóa id của A trong acceptFriend của B
+    const exitIdAinB = await User.findOne({
+      _id: userId,
+      "acceptFriends.id": myUserId,
+    });
+    if (exitIdAinB) {
+      await User.updateOne(
+        {
+          _id: userId,
+        },
+        {
+          $pull: { acceptFriends: { id: myUserId } },
+        }
+      );
+    }
+    //xóa id của B trong requestFriend của A
+    const exitIdBinA = await User.findOne({
+      _id: myUserId,
+      "requestFriends.id": userId,
+    });
+    if (exitIdBinA) {
+      await User.updateOne(
+        {
+          _id: myUserId,
+        },
+        {
+          $pull: { requestFriends: { id: userId } },
+        }
+      );
+    }
+    socket.emit("SERVER_FRIEND_STATUS", {
+      userId: userId,
+      status: "none",
+    });
+  });
+  //refuse add friend
+  socket.on("CLIENT_REFUSE_FRIEND", async (userId) => {
+    const myUserId = user._id;
+
+    //xóa id của A trong acceptFriend của B
+    const exitIdAinB = await User.findOne({
+      _id: myUserId,
+      "acceptFriends.id": userId,
+    });
+    if (exitIdAinB) {
+      await User.updateOne(
+        {
+          _id: myUserId,
+        },
+        {
+          $pull: { acceptFriends: { id: userId } },
+        }
+      );
+    }
+    //xóa id của B trong requestFriend của A
+    const exitIdBinA = await User.findOne({
+      _id: userId,
+      "requestFriends.id": myUserId,
+    });
+    if (exitIdBinA) {
+      await User.updateOne(
+        {
+          _id: userId,
+        },
+        {
+          $pull: { requestFriends: { id: myUserId } },
+        }
+      );
+    }
+  });
+  //accept add friend
+  socket.on("CLIENT_ACCEPT_FRIEND", async (userId) => {
+    const myUserId = user._id;
+
+    //xóa id của A trong acceptFriend của B và thêm vào FriendList
+    const exitIdAinB = await User.findOne({
+      _id: myUserId,
+      "acceptFriends.id": userId,
+    });
+    if (exitIdAinB) {
+      await User.updateOne(
+        {
+          _id: myUserId,
+        },
+        {
+          $pull: { acceptFriends: { id: userId } },
+          $push: {
+            FriendList: {
+              user_id: userId,
+              room_chat_id: "",
+            },
+          },
+        }
+      );
+    }
+    //xóa id của B trong requestFriend của A và thêm vào friendList
+    const exitIdBinA = await User.findOne({
+      _id: userId,
+      "requestFriends.id": myUserId,
+    });
+    if (exitIdBinA) {
+      await User.updateOne(
+        {
+          _id: userId,
+        },
+        {
+          $pull: { requestFriends: { id: myUserId } },
+          $push: {
+            FriendList: {
+              user_id: myUserId,
+              room_chat_id: "",
+            },
+          },
+        }
+      );
+    }
   });
   // const token = socket.handshake.auth.token;
   // //   get user detail

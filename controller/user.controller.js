@@ -456,7 +456,9 @@ module.exports.getUser = async (req, res) => {
     const objectSearch = searchHelper(req.query);
     if (objectSearch.$or) find.$or = objectSearch.$or;
 
-    const users = await User.find(find).select("-password -refresh_token");
+    const users = await User.find(find).select(
+      "-password -refresh_token -googleId"
+    );
 
     // Gắn trạng thái pending nếu user có trong requestFriends
     const dataWithStatus = users.map((u) => {
@@ -470,6 +472,28 @@ module.exports.getUser = async (req, res) => {
       error: false,
       success: true,
       data: dataWithStatus,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//friend invite list
+module.exports.friendInvite = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const user = await User.findOne({ _id: userId });
+    const acceptFriendIds = user.acceptFriends.map((item) => item.id);
+    const users = await User.find({
+      _id: { $in: acceptFriendIds },
+    }).select("-password -refresh_token -googleId");
+    return res.status(200).json({
+      success: true,
+      error: false,
+      data: users,
     });
   } catch (error) {
     return res.status(500).json({
