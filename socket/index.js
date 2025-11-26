@@ -106,6 +106,16 @@ io.on("connection", async (socket) => {
         }
       );
     }
+    //trả về số lời mời kết bạn bên B
+    const infoUserB = await User.findOne({
+      _id: userId,
+    });
+    const lengthAcceptFriend = infoUserB.acceptFriends.length;
+
+    socket.broadcast.emit("SEVER_RETURN_LENGTH_ACCEPT_FRIEND", {
+      userId: userId,
+      lengthAcceptFriend: lengthAcceptFriend,
+    });
     socket.emit("SERVER_FRIEND_STATUS", {
       userId: userId,
       status: "pending",
@@ -144,6 +154,16 @@ io.on("connection", async (socket) => {
         }
       );
     }
+    //trả về số lời mời kết bạn bên B
+    const infoUserB = await User.findOne({
+      _id: userId,
+    });
+    const lengthAcceptFriend = infoUserB.acceptFriends.length;
+
+    socket.broadcast.emit("SEVER_RETURN_LENGTH_ACCEPT_FRIEND", {
+      userId: userId,
+      lengthAcceptFriend: lengthAcceptFriend,
+    });
     socket.emit("SERVER_FRIEND_STATUS", {
       userId: userId,
       status: "none",
