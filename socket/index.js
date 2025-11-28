@@ -1,6 +1,7 @@
 const express = require("express");
 const User = require("../model/user.model");
 const Chat = require("../model/chat.model");
+const RoomChat = require("../model/room-chat.model");
 const { Server } = require("socket.io");
 const http = require("http");
 const { getUserDetail } = require("../helper/getUserFormToken");
@@ -30,25 +31,30 @@ const onlineUser = new Set();
 io.on("connection", async (socket) => {
   const token = socket.handshake.auth.token;
   const user = await getUserDetail(token);
+  // Nhận room ID và join room
+  socket.on("JOIN_ROOM", ({ roomChatId }) => {
+    if (!roomChatId) return;
+    socket.join(roomChatId);
+  });
   //message
-  socket.on("CLIENT_SEND_MASSAGE", async (content) => {
-    const { message, images } = content;
+  socket.on("CLIENT_SEND_MESSAGE", async (content) => {
+    const { message, images, roomChatId } = content;
 
     let uploadsImages = [];
-    if (images && images.length > 0) {
-      for (const base64 of images) {
-        const result = await cloudinary.uploader.upload(base64, {
-          folder: "chat_app",
-        });
 
-        uploadsImages.push({
-          url: result.secure_url,
-          public_id: result.public_id,
-        });
-      }
+    if (images && images.length > 0) {
+      uploadsImages = await Promise.all(
+        images.map(async (base64) => {
+          const result = await cloudinary.uploader.upload(base64, {
+            folder: "chat_app",
+          });
+          return { url: result.secure_url, public_id: result.public_id };
+        })
+      );
     }
     const chat = new Chat({
       user_id: user._id,
+      room_chat_id: roomChatId,
       content: message,
       images: uploadsImages,
     });
@@ -60,11 +66,11 @@ io.on("connection", async (socket) => {
       avatar: user.avatar,
       images: uploadsImages,
     };
-    io.emit("SERVER_RETURN_MASSAGE", payload);
+    io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
   });
   //typing
   socket.on("CLIENT_SEND_TYPING", async (type) => {
-    socket.broadcast.emit("SERVER_RETURN_TYPING", {
+    socket.broadcast.to(roomChatId).emit("SERVER_RETURN_TYPING", {
       user_id: user._id,
       type: type,
       avatar: user.avatar,
@@ -74,6 +80,7 @@ io.on("connection", async (socket) => {
   //add friend
   socket.on("CLIENT_ADD_FRIEND", async (content) => {
     const { userId, text } = content;
+
     const myUserId = user._id;
     //thêm id của A vào acceptFriend của B
     const exitIdAinB = await User.findOne({
@@ -116,6 +123,17 @@ io.on("connection", async (socket) => {
       userId: userId,
       lengthAcceptFriend: lengthAcceptFriend,
     });
+    //trả về thông tin A trong danh sách lời mời kết bạn của B
+    const infoUserA = await User.findOne({
+      _id: myUserId,
+    }).select(" -password -googleId -refresh_token");
+
+    socket.broadcast.emit("SERVER_RETURN_INFO_A", {
+      userId: userId,
+      infoUserA: infoUserA,
+    });
+
+    //trả về trạng thái nút button bên A
     socket.emit("SERVER_FRIEND_STATUS", {
       userId: userId,
       status: "pending",
@@ -164,6 +182,12 @@ io.on("connection", async (socket) => {
       userId: userId,
       lengthAcceptFriend: lengthAcceptFriend,
     });
+    //xóa thông tin A trong danh sách lời mời kết bạn bên B
+    socket.broadcast.emit("SERVER_DELETE_INFO_A", {
+      userIdB: userId,
+      userIdA: myUserId,
+    });
+    //trả về trạng thái nút button bên A
     socket.emit("SERVER_FRIEND_STATUS", {
       userId: userId,
       status: "none",
@@ -203,54 +227,63 @@ io.on("connection", async (socket) => {
         }
       );
     }
+    //xóa thông tin A trong danh sách lời mời kết bạn bên B
+    socket.emit("SERVER_DELETE_INFO_A", {
+      userIdB: myUserId,
+      userIdA: userId,
+    });
   });
   //accept add friend
   socket.on("CLIENT_ACCEPT_FRIEND", async (userId) => {
     const myUserId = user._id;
 
-    //xóa id của A trong acceptFriend của B và thêm vào FriendList
-    const exitIdAinB = await User.findOne({
+    const exitIdAinB = await User.exists({
       _id: myUserId,
       "acceptFriends.id": userId,
     });
-    if (exitIdAinB) {
+    const exitIdBinA = await User.exists({
+      _id: userId,
+      "requestFriends.id": myUserId,
+    });
+
+    let roomChat;
+
+    if (exitIdAinB && exitIdBinA) {
+      const dataRoom = {
+        typeRoom: "friend",
+        users: [
+          { user_id: userId, role: "superAdmin" },
+          { user_id: myUserId, role: "superAdmin" },
+        ],
+      };
+      roomChat = await new RoomChat(dataRoom).save();
+    }
+
+    if (exitIdAinB && roomChat) {
       await User.updateOne(
-        {
-          _id: myUserId,
-        },
+        { _id: myUserId },
         {
           $pull: { acceptFriends: { id: userId } },
-          $push: {
-            FriendList: {
-              user_id: userId,
-              room_chat_id: "",
-            },
+          $addToSet: {
+            FriendList: { user_id: userId, room_chat_id: roomChat._id },
           },
         }
       );
     }
-    //xóa id của B trong requestFriend của A và thêm vào friendList
-    const exitIdBinA = await User.findOne({
-      _id: userId,
-      "requestFriends.id": myUserId,
-    });
-    if (exitIdBinA) {
+
+    if (exitIdBinA && roomChat) {
       await User.updateOne(
-        {
-          _id: userId,
-        },
+        { _id: userId },
         {
           $pull: { requestFriends: { id: myUserId } },
-          $push: {
-            FriendList: {
-              user_id: myUserId,
-              room_chat_id: "",
-            },
+          $addToSet: {
+            FriendList: { user_id: myUserId, room_chat_id: roomChat._id },
           },
         }
       );
     }
   });
+
   // const token = socket.handshake.auth.token;
   // //   get user detail
   // const user = await getUserDetail(token);

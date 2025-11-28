@@ -489,11 +489,47 @@ module.exports.friendInvite = async (req, res) => {
     const acceptFriendIds = user.acceptFriends.map((item) => item.id);
     const users = await User.find({
       _id: { $in: acceptFriendIds },
-    }).select("-password -refresh_token -googleId");
+    }).select("name email avatar background date_of_birth mobile gender");
+
     return res.status(200).json({
       success: true,
       error: false,
       data: users,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//list friend
+module.exports.friendList = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const myUser = await User.findOne({ _id: userId });
+    const friendList = myUser.FriendList;
+    const friendListId = friendList.map((item) => item.user_id);
+    const users = await User.find({
+      _id: { $in: friendListId },
+    }).select("name email avatar background date_of_birth mobile gender");
+    const usersWithInfo = users.map((user) => {
+      const infoFriend = friendList.find(
+        (f) => f.user_id.toString() === user._id.toString()
+      );
+      return {
+        ...user.toObject(),
+        infoFriend,
+      };
+    });
+
+    const countFriend = users.length;
+    return res.status(200).json({
+      success: true,
+      error: false,
+      data: usersWithInfo,
+      count: countFriend,
     });
   } catch (error) {
     return res.status(500).json({
