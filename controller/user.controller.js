@@ -1,4 +1,5 @@
 const User = require("../model/user.model");
+const RoomChat = require("../model/room-chat.model");
 const bcryptjs = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { sendMail } = require("../config/sendMail");
@@ -481,6 +482,28 @@ module.exports.getUser = async (req, res) => {
     });
   }
 };
+//get all users
+module.exports.getAllUser = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const users = await User.find({
+      _id: { $ne: userId },
+    })
+      .limit(6)
+      .select("name email avatar background date_of_birth gender");
+    return res.status(200).json({
+      error: false,
+      success: true,
+      data: users,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
 //friend invite list
 module.exports.friendInvite = async (req, res) => {
   try {
@@ -489,7 +512,9 @@ module.exports.friendInvite = async (req, res) => {
     const acceptFriendIds = user.acceptFriends.map((item) => item.id);
     const users = await User.find({
       _id: { $in: acceptFriendIds },
-    }).select("name email avatar background date_of_birth mobile gender");
+    }).select(
+      "name email avatar background date_of_birth mobile gender requestFriends"
+    );
 
     return res.status(200).json({
       success: true,
@@ -530,6 +555,60 @@ module.exports.friendList = async (req, res) => {
       error: false,
       data: usersWithInfo,
       count: countFriend,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//create room chat
+module.exports.createRoomChat = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const { title, members } = req.body;
+
+    const dataRoom = {
+      title: title || "",
+      typeRoom: "group",
+      users: [],
+    };
+    for (const userId of members) {
+      dataRoom.users.push({ user_id: userId, role: "member" });
+    }
+    dataRoom.users.push({ user_id: userId, role: "admin" });
+
+    const roomChat = new RoomChat(dataRoom);
+    await roomChat.save();
+    return res.status(200).json({
+      message: "Phòng chat được tạo thành công",
+      error: false,
+      success: true,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//get room chat
+module.exports.getRoomChat = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const rooms = await RoomChat.find({
+      typeRoom: "group",
+      "users.user_id": userId,
+    });
+    const countGroup = rooms.length;
+    return res.status(200).json({
+      error: false,
+      success: true,
+      data: rooms,
+      count: countGroup,
     });
   } catch (error) {
     return res.status(500).json({

@@ -31,7 +31,10 @@ router.put(
   controller.userImage
 );
 router.patch("/updateUser", middleware.auth, controller.updateUser);
-router.get("/getAllUser", middleware.auth, controller.getUser);
+router.get("/getUser", middleware.auth, controller.getUser);
+router.get("/getAllUser", middleware.auth, controller.getAllUser);
 router.get("/getAcceptFriend", middleware.auth, controller.friendInvite);
 router.get("/friendList", middleware.auth, controller.friendList);
+router.post("/createRoom", middleware.auth, controller.createRoomChat);
+router.get("/getRoom", middleware.auth, controller.getRoomChat);
 module.exports = router;
