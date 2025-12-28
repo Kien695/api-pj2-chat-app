@@ -26,11 +26,9 @@ const io = new Server(server, {
 // socket running at localhost:3000
 
 //online user
-const onlineUser = new Set();
+const onlineUser = new Map();
 
 io.on("connection", async (socket) => {
-  const token = socket.handshake.auth.token;
-  const user = await getUserDetail(token);
   // Nhận room ID và join room
   socket.on("JOIN_ROOM", ({ roomChatId }) => {
     if (!roomChatId) return;
@@ -40,7 +38,7 @@ io.on("connection", async (socket) => {
   //message
   socket.on("CLIENT_SEND_MESSAGE", async (content) => {
     const { message, images, roomChatId } = content;
-    console.log(roomChatId);
+
     let uploadsImages = [];
 
     if (images && images.length > 0) {
@@ -286,31 +284,37 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // const token = socket.handshake.auth.token;
-  // //   get user detail
-  // const user = await getUserDetail(token);
-  // socket.join(user?._id);
-  // onlineUser.add(user?._id?.toString());
-  // io.emit("onlineUser", Array.from(onlineUser));
-  // socket.on("Message_Page", async (userId) => {
-  //   const userDetail = await User.findById(userId).select(
-  //     "-password -refreshToken"
-  //   );
-  //   const payload = {
-  //     _id: userDetail?._id,
-  //     name: userDetail?.name,
-  //     email: userDetail?.email,
-  //     avatar: userDetail?.avatar,
-  //     mobile: userDetail?.mobile,
-  //     date_of_birth: userDetail?.date_of_birth,
-  //     background: userDetail?.background,
-  //     gender: userDetail?.gender,
-  //     online: onlineUser.has(userId),
-  //   };
-  //   socket.emit("Message_user", payload);
-  // });
-  socket.on("disconnect", () => {
-    // onlineUser.delete(user?._id);
+  //user online
+  const token = socket.handshake.auth.token;
+  const user = await getUserDetail(token);
+  const userId = user?._id.toString();
+  //add socket
+  if (!onlineUser.has(userId)) {
+    onlineUser.set(userId, new Set());
+  }
+  onlineUser.get(userId).add(socket.id);
+  //Nếu socket đầu tiên thì online
+  if (onlineUser.get(userId).size === 1) {
+    await User.updateOne({ _id: userId }, { status: "online" });
+    socket.broadcast.emit("SERVER_USER_ONLINE", {
+      userId: userId,
+    });
+  }
+
+  console.log("connected user", userId, socket.id);
+  socket.on("disconnect", async () => {
+    const sockets = onlineUser.get(userId);
+    if (!sockets) return;
+    sockets.delete(socket.id);
+    if (sockets.size === 0) {
+      onlineUser.delete(userId);
+      const lastActive = new Date();
+      await User.updateOne({ _id: userId }, { status: "offline", lastActive });
+      socket.broadcast.emit("SERVER_USER_OFFLINE", {
+        userId: userId,
+        lastActive,
+      });
+    }
     console.log("disconnect user", socket.id);
   });
 });
