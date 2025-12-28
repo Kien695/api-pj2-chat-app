@@ -483,11 +483,19 @@ module.exports.getUser = async (req, res) => {
   }
 };
 //get all users
-module.exports.getAllUser = async (req, res) => {
+module.exports.getAllStranger = async (req, res) => {
   try {
     const userId = res.locals.userId;
+    const myUser = await User.findById(userId);
+    const friendIds = myUser.FriendList.map((item) => item.user_id);
+    const requestFriends = myUser.requestFriends.map((item) => item.id);
+    const acceptFriends = myUser.acceptFriends.map((item) => item.id);
+
     const users = await User.find({
-      _id: { $ne: userId },
+      _id: {
+        $ne: userId,
+        $nin: [...friendIds, ...requestFriends, ...acceptFriends],
+      },
     })
       .limit(6)
       .select("name email avatar background date_of_birth gender");
@@ -609,6 +617,40 @@ module.exports.getRoomChat = async (req, res) => {
       success: true,
       data: rooms,
       count: countGroup,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//search user
+module.exports.searchUser = async (req, res) => {
+  try {
+    const keyword = req.query.keyword; // email hoặc mobile
+    const userId = res.locals.userId;
+    console.log(typeof keyword);
+    // Tìm user khác userId và email OR mobile khớp
+    const user = await User.findOne({
+      _id: { $ne: userId },
+      $or: [{ email: keyword }, { mobile: keyword }],
+    }).select("-password -refresh_token -googleId");
+
+    if (!user) {
+      return res.status(404).json({
+        error: true,
+        success: false,
+        message: "Không tìm thấy người dùng",
+        data: [],
+      });
+    }
+
+    return res.status(200).json({
+      error: false,
+      success: true,
+      data: user,
     });
   } catch (error) {
     return res.status(500).json({

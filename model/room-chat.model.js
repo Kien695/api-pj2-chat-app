@@ -14,7 +14,10 @@ const roomChatSchema = new mongoose.Schema(
     status: String,
     users: [
       {
-        user_id: String,
+        user_id: {
+          type: mongoose.Schema.ObjectId,
+          ref: "User",
+        },
         role: String,
       },
     ],

@@ -35,11 +35,12 @@ io.on("connection", async (socket) => {
   socket.on("JOIN_ROOM", ({ roomChatId }) => {
     if (!roomChatId) return;
     socket.join(roomChatId);
+    socket.roomChatId = roomChatId;
   });
   //message
   socket.on("CLIENT_SEND_MESSAGE", async (content) => {
     const { message, images, roomChatId } = content;
-
+    console.log(roomChatId);
     let uploadsImages = [];
 
     if (images && images.length > 0) {
@@ -70,7 +71,8 @@ io.on("connection", async (socket) => {
   });
   //typing
   socket.on("CLIENT_SEND_TYPING", async (type) => {
-    socket.broadcast.to(roomChatId).emit("SERVER_RETURN_TYPING", {
+    if (!socket.roomChatId) return;
+    socket.broadcast.to(socket.roomChatId).emit("SERVER_RETURN_TYPING", {
       user_id: user._id,
       type: type,
       avatar: user.avatar,
