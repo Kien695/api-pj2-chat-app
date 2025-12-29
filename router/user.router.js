@@ -31,11 +31,12 @@ router.put(
   controller.userImage
 );
 router.patch("/updateUser", middleware.auth, controller.updateUser);
-router.get("/getUser", middleware.auth, controller.getUser);
+router.get("/getUserFind", middleware.auth, controller.getUser);
 router.get("/getAllUser", middleware.auth, controller.getAllStranger);
 router.get("/searchUser", middleware.auth, controller.searchUser);
 router.get("/getAcceptFriend", middleware.auth, controller.friendInvite);
 router.get("/friendList", middleware.auth, controller.friendList);
 router.post("/createRoom", middleware.auth, controller.createRoomChat);
 router.get("/getRoom", middleware.auth, controller.getRoomChat);
+router.get("/getAllRoomChat", middleware.auth, controller.getAllRoomChat);
 module.exports = router;

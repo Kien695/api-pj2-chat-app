@@ -21,6 +21,22 @@ const roomChatSchema = new mongoose.Schema(
         role: String,
       },
     ],
+    //  TIN CUỐI (sidebar dùng)
+    lastMessage: {
+      content: String,
+      sender: {
+        type: mongoose.Schema.ObjectId,
+        ref: "User",
+      },
+      createdAt: Date,
+    },
+
+    //  UNREAD THEO USER
+    unreadCount: {
+      type: Map,
+      of: Number,
+      default: {},
+    },
 
     deletedAt: Date,
   },

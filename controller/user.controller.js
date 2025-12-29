@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const User = require("../model/user.model");
 const RoomChat = require("../model/room-chat.model");
 const bcryptjs = require("bcryptjs");
@@ -626,12 +627,34 @@ module.exports.getRoomChat = async (req, res) => {
     });
   }
 };
+//get room chat
+module.exports.getAllRoomChat = async (req, res) => {
+  try {
+    const roomChat = await RoomChat.find({
+      "users.user_id": res.locals.userId,
+    });
+    console.log(RoomChat.schema.path("users.user_id").instance);
+
+    console.log(roomChat);
+    if (roomChat) {
+      return res.status(200).json({
+        success: true,
+        data: roomChat,
+      });
+    }
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi server",
+    });
+  }
+};
 //search user
 module.exports.searchUser = async (req, res) => {
   try {
     const keyword = req.query.keyword; // email hoặc mobile
     const userId = res.locals.userId;
-    console.log(typeof keyword);
+
     // Tìm user khác userId và email OR mobile khớp
     const user = await User.findOne({
       _id: { $ne: userId },

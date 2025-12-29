@@ -58,12 +58,36 @@ io.on("connection", async (socket) => {
       images: uploadsImages,
     });
     await chat.save();
+
+    //Lấy room
+    const room = await RoomChat.findById(roomChatId);
+    //Tạo object tăng unread
+    const incObj = {};
+    room.users.forEach((u) => {
+      const uid = u.user_id.toString();
+      if (uid !== user._id.toString()) {
+        incObj[`unreadCount.${uid}`] = 1;
+      }
+    });
+    //Cập nhật room chat
+    await RoomChat.findByIdAndUpdate(roomChatId, {
+      lastMessage: {
+        content: message,
+        sender: user._id,
+        createdAt: new Date(),
+      },
+      $inc: incObj,
+      $set: { [`unreadCount.${user._id.toString()}`]: 0 },
+    });
     //trả data về client
     const payload = {
+      _id: chat._id,
+      roomChatId,
       user_id: user._id,
       content: message,
       avatar: user.avatar,
       images: uploadsImages,
+      createdAt: chat.createdAt,
     };
     io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
   });
@@ -282,6 +306,31 @@ io.on("connection", async (socket) => {
         }
       );
     }
+  });
+  //unfriend
+  socket.on("CLIENT_UNFRIEND", async (userId) => {
+    console.log(userId);
+    const myUserId = user._id;
+    //lấy room chat giữa 2 người
+    const myInfo = await User.findById(myUserId);
+    const friendInfo = myInfo.FriendList.find(
+      (item) => item.user_id === userId
+    );
+    if (!friendInfo) return;
+    const roomChatId = friendInfo.room_chat_id;
+    //xóa bạn bè khỏi danh sách bạn bè của 2 người
+    await User.updateOne(
+      { _id: myUserId },
+      { $pull: { FriendList: { user_id: userId } } }
+    );
+    await User.updateOne(
+      { _id: userId },
+      { $pull: { FriendList: { user_id: myUserId } } }
+    );
+    //xóa room chat
+    await RoomChat.findByIdAndDelete(roomChatId);
+    //xóa tin nhắn trong room chat
+    await Chat.deleteMany({ room_chat_id: roomChatId });
   });
 
   //user online
