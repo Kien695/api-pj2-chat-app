@@ -607,10 +607,10 @@ module.exports.createRoomChat = async (req, res) => {
 //get room chat
 module.exports.getRoomChat = async (req, res) => {
   try {
-    const userId = res.locals.userId;
+    const objectId = new mongoose.Types.ObjectId(res.locals.userId);
     const rooms = await RoomChat.find({
       typeRoom: "group",
-      "users.user_id": userId,
+      "users.user_id": objectId,
     });
     const countGroup = rooms.length;
     return res.status(200).json({
@@ -630,12 +630,18 @@ module.exports.getRoomChat = async (req, res) => {
 //get room chat
 module.exports.getAllRoomChat = async (req, res) => {
   try {
-    const roomChat = await RoomChat.find({
-      "users.user_id": res.locals.userId,
-    });
-    console.log(RoomChat.schema.path("users.user_id").instance);
+    const objectId = new mongoose.Types.ObjectId(res.locals.userId);
 
-    console.log(roomChat);
+    const roomChat = await RoomChat.find({
+      "users.user_id": objectId,
+    })
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "users.user_id",
+        select:
+          "-password -refresh_token -googleId -FriendList -requestFriends -acceptFriends",
+      });
+
     if (roomChat) {
       return res.status(200).json({
         success: true,

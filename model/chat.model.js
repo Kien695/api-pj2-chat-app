@@ -5,7 +5,7 @@ const chatSchema = new mongoose.Schema(
       type: mongoose.Schema.ObjectId,
       ref: "User",
     },
-    room_chat_id: String,
+    room_chat_id: { type: mongoose.Schema.ObjectId, ref: "RoomChat" },
     content: String,
     images: [{ url: { type: String }, public_id: { type: String } }],
     video: String,
