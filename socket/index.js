@@ -37,13 +37,45 @@ io.on("connection", async (socket) => {
     if (!user) throw new Error("Invalid token");
     const userId = user._id.toString();
     console.log("User connected:", userId);
+
     socket.join(userId);
     // Nhận room ID và join room
     socket.on("JOIN_ROOM", ({ roomChatId }) => {
-      if (!roomChatId) return;
+      // leave room cũ nếu có
+      if (socket.roomChatId) {
+        socket.leave(socket.roomChatId);
+      }
       socket.join(roomChatId);
       socket.roomChatId = roomChatId;
     });
+    //user online
+
+    //add socket
+    if (!onlineUser.has(userId)) {
+      onlineUser.set(userId, new Set());
+    }
+    onlineUser.get(userId).add(socket.id);
+    //  GỬI DANH SÁCH ONLINE NGAY KHI CONNECT
+    const onlineUsersPayload = {};
+    for (const [uid, sockets] of onlineUser.entries()) {
+      if (sockets.size > 0) {
+        onlineUsersPayload[uid] = {
+          status: "online",
+          lastActive: null,
+        };
+      }
+    }
+
+    socket.emit("SERVER_ONLINE_USERS", onlineUsersPayload);
+    //Nếu socket đầu tiên thì online
+    if (onlineUser.get(userId).size === 1) {
+      await User.updateOne({ _id: userId }, { status: "online" });
+      socket.broadcast.emit("SERVER_USER_ONLINE", {
+        userId: userId,
+      });
+    }
+
+    console.log("connected user", userId, socket.id);
     //message
     socket.on("CLIENT_SEND_MESSAGE", async (content) => {
       const { message, images, roomChatId } = content;
@@ -79,16 +111,24 @@ io.on("connection", async (socket) => {
         }
       });
       //Cập nhật room chat
+      const now = new Date();
       await RoomChat.findByIdAndUpdate(roomChatId, {
         lastMessage: {
           content: message,
           sender: user._id,
-          createdAt: new Date(),
+          createdAt: now,
         },
         $inc: incObj,
         $set: { [`unreadCount.${user._id.toString()}`]: 0 },
       });
+
       //trả data về client
+      const unreadCountForUsers = {};
+      room.users.forEach((u) => {
+        const uid = u.user_id.toString();
+        unreadCountForUsers[uid] =
+          uid === user._id.toString() ? 0 : (room.unreadCount?.[uid] || 0) + 1;
+      });
       const payload = {
         _id: chat._id,
         roomChatId,
@@ -96,13 +136,24 @@ io.on("connection", async (socket) => {
         content: message,
         avatar: user.avatar,
         images: uploadsImages,
-        createdAt: chat.createdAt,
+        createdAt: now,
+        unreadCountForUsers,
       };
       io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
+      room.users.forEach((u) => {
+        const sockets = onlineUser.get(u.user_id.toString());
+        if (sockets) {
+          sockets.forEach((sid) => {
+            io.to(sid).emit("SERVER_RETURN_SIDEBAR", payload);
+          });
+        }
+      });
     });
+
     //typing
     socket.on("CLIENT_SEND_TYPING", async (type) => {
       if (!socket.roomChatId) return;
+
       socket.broadcast.to(socket.roomChatId).emit("SERVER_RETURN_TYPING", {
         user_id: user._id,
         type: type,
@@ -350,35 +401,22 @@ io.on("connection", async (socket) => {
         roomChatId,
       });
     });
+    //client seen meessage in sibar
+    socket.on("CLIENT_READ_ROOM", async ({ roomChatId }) => {
+      if (!roomChatId) return;
 
-    //user online
-
-    //add socket
-    if (!onlineUser.has(userId)) {
-      onlineUser.set(userId, new Set());
-    }
-    onlineUser.get(userId).add(socket.id);
-    //  GỬI DANH SÁCH ONLINE NGAY KHI CONNECT
-    const onlineUsersPayload = {};
-    for (const [uid, sockets] of onlineUser.entries()) {
-      if (sockets.size > 0) {
-        onlineUsersPayload[uid] = {
-          status: "online",
-          lastActive: null,
-        };
-      }
-    }
-
-    socket.emit("SERVER_ONLINE_USERS", onlineUsersPayload);
-    //Nếu socket đầu tiên thì online
-    if (onlineUser.get(userId).size === 1) {
-      await User.updateOne({ _id: userId }, { status: "online" });
-      socket.broadcast.emit("SERVER_USER_ONLINE", {
-        userId: userId,
+      await RoomChat.findByIdAndUpdate(roomChatId, {
+        $set: {
+          [`unreadCount.${userId}`]: 0,
+        },
       });
-    }
 
-    console.log("connected user", userId, socket.id);
+      io.to(roomChatId).emit("SERVER_READ_ROOM", {
+        roomChatId,
+        userId,
+      });
+    });
+
     socket.on("disconnect", async () => {
       const sockets = onlineUser.get(userId);
       if (!sockets) return;
