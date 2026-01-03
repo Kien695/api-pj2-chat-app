@@ -30,6 +30,7 @@ module.exports.uploadOne = async (req, res, next) => {
 
     req.body.image = result.secure_url;
     req.body.image_id = result.public_id;
+
     next();
   } catch (error) {
     console.error("Upload failed:", error);

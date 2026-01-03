@@ -23,7 +23,7 @@ router.post(
 );
 router.post("/refreshToken", controller.refreshToken);
 router.get("/getUser", middleware.auth, controller.userDetail);
-router.put(
+router.patch(
   "/updateImage",
   upload.single("image"),
   uploadCloud.uploadOne,
@@ -38,5 +38,13 @@ router.get("/getAcceptFriend", middleware.auth, controller.friendInvite);
 router.get("/friendList", middleware.auth, controller.friendList);
 router.post("/createRoom", middleware.auth, controller.createRoomChat);
 router.get("/getRoom", middleware.auth, controller.getRoomChat);
+router.patch(
+  "/editRoom/:id",
+  upload.single("image"),
+  uploadCloud.uploadOne,
+  middleware.auth,
+  controller.editRoomChat
+);
 router.get("/getAllRoomChat", middleware.auth, controller.getAllRoomChat);
+router.patch("/addMember/:id", middleware.auth, controller.addMember);
 module.exports = router;

@@ -24,6 +24,7 @@ const roomChatSchema = new mongoose.Schema(
     //  TIN CUỐI (sidebar dùng)
     lastMessage: {
       content: String,
+      images: Array,
       sender: {
         type: mongoose.Schema.ObjectId,
         ref: "User",

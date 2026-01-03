@@ -655,6 +655,45 @@ module.exports.getAllRoomChat = async (req, res) => {
     });
   }
 };
+//edit room chat
+module.exports.editRoomChat = async (req, res) => {
+  try {
+    const roomChatId = req.params.id;
+    const { title } = req.body;
+    const roomChat = await RoomChat.findById(roomChatId);
+    if (!roomChat) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy phòng chat",
+      });
+    }
+    const updatedData = {};
+    if (title) updatedData.title = title;
+    if (req.body.image && req.body.image_id) {
+      // Xoá ảnh cũ trên Cloudinary nếu có
+      if (roomChat.avatar_public_id) {
+        cloudinary.uploader.destroy(roomChat.avatar_public_id);
+      }
+      updatedData.avatar = req.body.image;
+      updatedData.avatar_public_id = req.body.image_id;
+    }
+    const roomChatUpdated = await RoomChat.findByIdAndUpdate(
+      roomChatId,
+      { $set: updatedData },
+      { new: true }
+    ).select("title avatar");
+    return res.status(200).json({
+      success: true,
+      error: false,
+      data: roomChatUpdated,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi server",
+    });
+  }
+};
 //search user
 module.exports.searchUser = async (req, res) => {
   try {
@@ -665,7 +704,9 @@ module.exports.searchUser = async (req, res) => {
     const user = await User.findOne({
       _id: { $ne: userId },
       $or: [{ email: keyword }, { mobile: keyword }],
-    }).select("-password -refresh_token -googleId");
+    }).select(
+      "-password -refresh_token -googleId -requestFriends -acceptFriends -FriendList"
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -686,6 +727,50 @@ module.exports.searchUser = async (req, res) => {
       message: error.message || error,
       error: true,
       success: false,
+    });
+  }
+};
+//add member for group
+module.exports.addMember = async (req, res) => {
+  try {
+    const roomChatId = req.params.id;
+    const members = req.body.members;
+
+    const room = await RoomChat.findById(roomChatId);
+    if (!room) {
+      return res.status(404).json({
+        error: true,
+        success: false,
+        message: "Room không tồn tại",
+      });
+    }
+    const existingIds = room.users.map((u) => u.user_id.toString());
+
+    const userObjects = members
+      .filter((id) => !existingIds.includes(id.toString()))
+      .map((id) => ({
+        user_id: id,
+        role: "member",
+      }));
+
+    if (userObjects.length > 0) {
+      await RoomChat.updateOne(
+        { _id: roomChatId },
+        {
+          $push: { users: { $each: userObjects } },
+        }
+      );
+    }
+
+    return res.status(200).json({
+      error: false,
+      success: true,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: true,
+      success: false,
+      message: error.message || error,
     });
   }
 };

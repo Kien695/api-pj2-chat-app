@@ -21,10 +21,15 @@ module.exports.index = async (req, res) => {
     const chats = await Chat.find({
       room_chat_id: objectRoomChatId,
       deleted: false,
-    }).populate({
-      path: "user_id",
-      select: "name avatar ",
-    });
+    })
+      .populate({
+        path: "user_id",
+        select: "name avatar ",
+      })
+      .populate({
+        path: "content_user",
+        select: "name avatar",
+      });
 
     // 2️ Lấy room chat
     const room = await RoomChat.findById(objectRoomChatId)
@@ -53,6 +58,11 @@ module.exports.index = async (req, res) => {
 
     if (room.typeRoom === "group") {
       // Group chat: lấy tất cả user (kể cả mình)
+      const admins = room.users.filter((u) => u.role === "admin");
+      const members = room.users.filter((u) => u.role !== "admin");
+
+      room.users = [...admins, ...members];
+
       otherUsers = room.users;
     } else {
       // Friend / private chat: chỉ lấy 1 user còn lại

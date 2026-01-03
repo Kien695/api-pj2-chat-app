@@ -115,6 +115,7 @@ io.on("connection", async (socket) => {
       await RoomChat.findByIdAndUpdate(roomChatId, {
         lastMessage: {
           content: message,
+          images: uploadsImages,
           sender: user._id,
           createdAt: now,
         },
@@ -416,7 +417,62 @@ io.on("connection", async (socket) => {
         userId,
       });
     });
+    //client update room info
+    socket.on("CLIENT_UPDATE_ROOM_INFO", async (data) => {
+      const { roomChatId, title, avatar } = data;
 
+      if (!roomChatId) return;
+      const systemMsg = await Chat.create({
+        room_chat_id: roomChatId,
+        user_id: user._id,
+        type: "system",
+        action: "rename_group",
+        content: title,
+      });
+      const populatedMsg = await Chat.findById(systemMsg._id).populate(
+        "user_id",
+        "name"
+      );
+      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+      io.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
+        title,
+        avatar,
+      });
+    });
+    //client add member
+    socket.on("CLIENT_ADD_MEMBER", async (data) => {
+      const { roomChatId, member } = data;
+      if (!roomChatId) return;
+
+      // Lấy info user mới thêm
+      const newUsers = await User.find(
+        { _id: { $in: member } },
+        "name avatar lastActive"
+      );
+
+      const systemMsg = await Chat.create({
+        room_chat_id: roomChatId,
+        user_id: user._id,
+        type: "system",
+        action: "add_member",
+        content_user: member,
+      });
+
+      const populatedMsg = await Chat.findById(systemMsg._id)
+        .populate("user_id", "name")
+        .populate("content_user", "name");
+
+      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+
+      io.to(roomChatId).emit("SERVER_ROOM_UPDATED_USER", {
+        users: newUsers.map((u) => ({
+          user_id: u,
+          role: "member",
+        })),
+      });
+    });
+
+    //disconnect
     socket.on("disconnect", async () => {
       const sockets = onlineUser.get(userId);
       if (!sockets) return;
