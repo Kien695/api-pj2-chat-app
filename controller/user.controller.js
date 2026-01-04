@@ -774,3 +774,120 @@ module.exports.addMember = async (req, res) => {
     });
   }
 };
+
+//remove member
+module.exports.removeMember = async (req, res) => {
+  try {
+    const memberId = req.body.memberId;
+    const roomChatId = req.params.id;
+    const currentUserId = res.locals.userId; // user đang đăng nhập
+
+    const roomChat = await RoomChat.findById(roomChatId);
+    if (!roomChat) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy phòng chat",
+      });
+    }
+
+    // 1️ Check user hiện tại có phải admin không
+    const currentUser = roomChat.users.find(
+      (u) => u.user_id.toString() === currentUserId
+    );
+
+    if (!currentUser || currentUser.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Bạn không có quyền xóa thành viên",
+      });
+    }
+
+    // 2️ Kiểm tra thành viên tồn tại trong nhóm
+    const member = roomChat.users.find(
+      (u) => u.user_id.toString() === memberId
+    );
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        message: "Thành viên không tồn tại trong nhóm",
+      });
+    }
+
+    if (member.role === "admin") {
+      return res.status(400).json({
+        success: false,
+        message: "Không thể xóa trưởng nhóm",
+      });
+    }
+
+    // 3️ Xóa member khỏi nhóm
+    await RoomChat.findByIdAndUpdate(roomChatId, {
+      $pull: { users: { user_id: memberId } },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Xóa thành viên khỏi nhóm thành công",
+      error: false,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      success: false,
+      error: true,
+    });
+  }
+};
+
+//leave group
+module.exports.leaveGroup = async (req, res) => {
+  try {
+    const roomChatId = req.params.id;
+    const currentUserId = res.locals.userId; // user đang đăng nhập
+
+    const roomChat = await RoomChat.findById(roomChatId);
+    if (!roomChat) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy phòng chat",
+      });
+    }
+
+    // 1 Kiểm tra thành viên tồn tại trong nhóm
+    const member = roomChat.users.find(
+      (u) => u.user_id.toString() === currentUserId
+    );
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        message: "Bạn không tồn tại trong nhóm",
+      });
+    }
+
+    if (member.role === "admin") {
+      return res.status(400).json({
+        success: false,
+        message: "Bạn phải ủy quyền nhóm trưởng trước khi rời nhóm",
+      });
+    }
+
+    // 3️ Xóa member khỏi nhóm
+    await RoomChat.findByIdAndUpdate(roomChatId, {
+      $pull: { users: { user_id: currentUserId } },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Rời nhóm thành công",
+      error: false,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      success: false,
+      error: true,
+    });
+  }
+};

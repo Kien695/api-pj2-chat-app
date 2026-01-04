@@ -471,7 +471,64 @@ io.on("connection", async (socket) => {
         })),
       });
     });
+    //client remove member
+    socket.on("CLIENT_REMOVE_MEMBER", async (data) => {
+      const { roomChatId, member } = data;
 
+      if (!roomChatId) return;
+      const systemMsg = await Chat.create({
+        room_chat_id: roomChatId,
+        user_id: user._id,
+        type: "system",
+        action: "remove_member",
+        content_user: member,
+      });
+      const roomChat = await RoomChat.findById(roomChatId)
+        .select("title typeRoom avatar users")
+        .populate({
+          path: "users.user_id",
+          select: "name avatar lastActive ",
+        });
+
+      const populatedMsg = await Chat.findById(systemMsg._id)
+        .populate("user_id", "name")
+        .populate("content_user", "name");
+      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+      io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
+        users: roomChat.users,
+        removedUserId: member,
+        action: "remove",
+      });
+    });
+    //client leave group
+    socket.on("CLIENT_LEAVE_GROUP", async (data) => {
+      const { roomChatId } = data;
+
+      if (!roomChatId) return;
+      const systemMsg = await Chat.create({
+        room_chat_id: roomChatId,
+        user_id: user._id,
+        type: "system",
+        action: "leave_group",
+        content_user: user._id,
+      });
+      const roomChat = await RoomChat.findById(roomChatId)
+        .select("title typeRoom avatar users")
+        .populate({
+          path: "users.user_id",
+          select: "name avatar lastActive ",
+        });
+
+      const populatedMsg = await Chat.findById(systemMsg._id)
+        .populate("user_id", "name")
+        .populate("content_user", "name");
+      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+      io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
+        users: roomChat.users,
+        removedUserId: user._id,
+        action: "leave",
+      });
+    });
     //disconnect
     socket.on("disconnect", async () => {
       const sockets = onlineUser.get(userId);

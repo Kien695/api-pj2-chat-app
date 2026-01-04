@@ -19,7 +19,7 @@ const chatSchema = new mongoose.Schema(
 
     action: {
       type: String,
-      enum: ["rename_group", "add_member", "leave_group"],
+      enum: ["rename_group", "add_member", "leave_group", "remove_member"],
     },
     content_user: [
       {
