@@ -37,3 +37,41 @@ module.exports.uploadOne = async (req, res, next) => {
     res.status(500).json({ message: "Upload failed", error });
   }
 };
+//upload file
+module.exports.uploadFile = async (req, res, next) => {
+  if (!req.files || !req.files.length) return next();
+
+  try {
+    const uploadedFiles = [];
+
+    for (const file of req.files) {
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: "raw",
+            folder: "chat/files",
+          },
+          (err, result) => {
+            if (result) resolve(result);
+            else reject(err);
+          }
+        );
+
+        streamifier.createReadStream(file.buffer).pipe(stream);
+      });
+
+      uploadedFiles.push({
+        url: result.secure_url,
+        public_id: result.public_id,
+        name: file.originalname,
+        size: file.size,
+        type: file.mimetype,
+      });
+    }
+
+    req.body.files = uploadedFiles;
+    next();
+  } catch (err) {
+    return res.status(500).json({ message: "Upload file failed" });
+  }
+};

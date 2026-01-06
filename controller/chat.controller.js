@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Chat = require("../model/chat.model");
 const RoomChat = require("../model/room-chat.model");
+//get chat
 module.exports.index = async (req, res) => {
   try {
     const roomChatId = req.params.roomChatId;
@@ -80,10 +81,39 @@ module.exports.index = async (req, res) => {
       users: otherUsers,
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       success: false,
       message: "Lỗi server",
+    });
+  }
+};
+
+//upload file chat
+module.exports.create = async (req, res) => {
+  try {
+    const roomChatId = req.params.roomChatId;
+
+    let files = req.body.files;
+
+    if (typeof files === "string") {
+      files = JSON.parse(files);
+    }
+    const chat = new Chat({
+      user_id: res.locals.userId,
+      room_chat_id: roomChatId,
+      files: files,
+    });
+
+    await chat.save();
+
+    return res.status(200).json({
+      success: true,
+      data: chat.files,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
     });
   }
 };

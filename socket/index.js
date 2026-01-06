@@ -78,7 +78,7 @@ io.on("connection", async (socket) => {
     console.log("connected user", userId, socket.id);
     //message
     socket.on("CLIENT_SEND_MESSAGE", async (content) => {
-      const { message, images, roomChatId } = content;
+      const { message, images, roomChatId, file } = content;
 
       let uploadsImages = [];
 
@@ -92,13 +92,15 @@ io.on("connection", async (socket) => {
           })
         );
       }
-      const chat = new Chat({
-        user_id: user._id,
-        room_chat_id: roomChatId,
-        content: message,
-        images: uploadsImages,
-      });
-      await chat.save();
+      if (message || images) {
+        const chat = new Chat({
+          user_id: user._id,
+          room_chat_id: roomChatId,
+          content: message,
+          images: uploadsImages,
+        });
+        await chat.save();
+      }
 
       //Lấy room
       const room = await RoomChat.findById(roomChatId);
@@ -116,6 +118,7 @@ io.on("connection", async (socket) => {
         lastMessage: {
           content: message,
           images: uploadsImages,
+          files: file,
           sender: user._id,
           createdAt: now,
         },
@@ -131,12 +134,13 @@ io.on("connection", async (socket) => {
           uid === user._id.toString() ? 0 : (room.unreadCount?.[uid] || 0) + 1;
       });
       const payload = {
-        _id: chat._id,
+        // _id: chat._id,
         roomChatId,
         user_id: user._id,
         content: message,
         avatar: user.avatar,
         images: uploadsImages,
+        files: file,
         createdAt: now,
         unreadCountForUsers,
       };
@@ -457,6 +461,10 @@ io.on("connection", async (socket) => {
         action: "add_member",
         content_user: member,
       });
+      const roomChat = await RoomChat.findById(roomChatId).populate(
+        "users.user_id",
+        "name avatar lastActive"
+      );
 
       const populatedMsg = await Chat.findById(systemMsg._id)
         .populate("user_id", "name")
@@ -470,6 +478,12 @@ io.on("connection", async (socket) => {
           role: "member",
         })),
       });
+      // 2. Update sibar cho user mới được thêm
+      for (const userId of member) {
+        io.to(userId.toString()).emit("SERVER_ROOM_UPDATED_SIDEBAR", {
+          roomChat,
+        });
+      }
     });
     //client remove member
     socket.on("CLIENT_REMOVE_MEMBER", async (data) => {
@@ -495,6 +509,7 @@ io.on("connection", async (socket) => {
         .populate("content_user", "name");
       io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
       io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
+        roomChatId,
         users: roomChat.users,
         removedUserId: member,
         action: "remove",
@@ -524,6 +539,7 @@ io.on("connection", async (socket) => {
         .populate("content_user", "name");
       io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
       io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
+        roomChatId,
         users: roomChat.users,
         removedUserId: user._id,
         action: "leave",

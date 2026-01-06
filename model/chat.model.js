@@ -7,11 +7,31 @@ const chatSchema = new mongoose.Schema(
     },
     room_chat_id: { type: mongoose.Schema.ObjectId, ref: "RoomChat" },
     content: String,
-    images: [{ url: { type: String }, public_id: { type: String } }],
+    // images: [{ url: { type: String }, public_id: { type: String } }],
+    images: [
+      new mongoose.Schema(
+        {
+          url: String,
+          public_id: String,
+        },
+        { _id: false }
+      ),
+    ],
     video: String,
     video_public_id: String,
-    file: String,
-    file_public_id: String,
+    files: [
+      new mongoose.Schema(
+        {
+          url: { type: String },
+          public_id: { type: String },
+          name: { type: String },
+          size: { type: Number },
+          type: { type: String },
+        },
+        { _id: false }
+      ),
+    ],
+
     type: {
       type: String,
       enum: ["system"],
@@ -37,5 +57,8 @@ const chatSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+// if (mongoose.models.Chat) {
+//   delete mongoose.models.Chat;
+// }
 const Chat = mongoose.model("Chat", chatSchema, "chats");
 module.exports = Chat;

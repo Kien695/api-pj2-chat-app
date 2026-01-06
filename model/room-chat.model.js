@@ -25,6 +25,7 @@ const roomChatSchema = new mongoose.Schema(
     lastMessage: {
       content: String,
       images: Array,
+      files: Array,
       sender: {
         type: mongoose.Schema.ObjectId,
         ref: "User",
