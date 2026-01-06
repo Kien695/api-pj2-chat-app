@@ -7,6 +7,7 @@ const { sendMail } = require("../config/sendMail");
 const { generateAccessToken } = require("../utils/generateAccessToken");
 const { generateRefreshToken } = require("../utils/generateRefreshToken");
 const searchHelper = require("../helper/search");
+const Chat = require("../model/chat.model");
 const cloudinary = require("cloudinary").v2;
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
@@ -595,6 +596,7 @@ module.exports.createRoomChat = async (req, res) => {
       message: "Phòng chat được tạo thành công",
       error: false,
       success: true,
+      data:roomChat,
     });
   } catch (error) {
     return res.status(500).json({
@@ -888,6 +890,61 @@ module.exports.leaveGroup = async (req, res) => {
       message: error.message || error,
       success: false,
       error: true,
+    });
+  }
+};
+//remove roomChat
+module.exports.removeRoom = async (req, res) => {
+  try {
+    const roomChatId = req.params.roomChatId;
+    const userId = res.locals.userId;
+
+    const room = await RoomChat.findById(roomChatId);
+    if (!room) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Phòng chat không tồn tại" });
+    }
+    const isAdmin = room.users.some(
+      (u) => u.user_id.toString() === userId.toString() && u.role === "admin"
+    );
+
+    if (!isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Bạn không có quyền xóa phòng chat",
+      });
+    }
+    // Xóa phòng chat
+    await RoomChat.findByIdAndDelete(roomChatId);
+    // Lấy tất cả chat trong phòng
+    const chats = await Chat.find({ room_chat_id: roomChatId });
+
+    // Tạo mảng tất cả promise xóa ảnh + file của tất cả chat
+    const allDestroyPromises = chats.flatMap((item) => {
+      const imagePromises = item.images.map((image) =>
+        cloudinary.uploader.destroy(image.public_id)
+      );
+      const filePromises = item.files.map((file) =>
+        cloudinary.uploader.destroy(file.public_id)
+      );
+      return [...imagePromises, ...filePromises];
+    });
+
+    // Xóa tất cả cùng lúc
+    await Promise.all(allDestroyPromises);
+
+    // Xóa tất cả chat khỏi DB
+    await Chat.deleteMany({ room_chat_id: roomChatId });
+
+    return res
+      .status(200)
+      .json({ success: true, message: "Phòng chat này đã được xóa!" });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
     });
   }
 };

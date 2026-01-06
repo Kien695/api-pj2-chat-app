@@ -49,4 +49,9 @@ router.get("/getAllRoomChat", middleware.auth, controller.getAllRoomChat);
 router.patch("/addMember/:id", middleware.auth, controller.addMember);
 router.patch("/removeMember/:id", middleware.auth, controller.removeMember);
 router.patch("/leaveGroup/:id", middleware.auth, controller.leaveGroup);
+router.delete(
+  "/removeRoom/:roomChatId",
+  middleware.auth,
+  controller.removeRoom
+);
 module.exports = router;

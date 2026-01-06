@@ -79,7 +79,8 @@ io.on("connection", async (socket) => {
     //message
     socket.on("CLIENT_SEND_MESSAGE", async (content) => {
       const { message, images, roomChatId, file } = content;
-
+      console.log(file);
+      console.log(message);
       let uploadsImages = [];
 
       if (images && images.length > 0) {
@@ -118,7 +119,7 @@ io.on("connection", async (socket) => {
         lastMessage: {
           content: message,
           images: uploadsImages,
-          files: file,
+          files: file ? file : [],
           sender: user._id,
           createdAt: now,
         },
@@ -545,6 +546,19 @@ io.on("connection", async (socket) => {
         action: "leave",
       });
     });
+    //client remove roomChat
+    socket.on("CLIENT_REMOVE_ROOM", async (data) => {
+      const { roomChatId } = data;
+
+      io.in(roomChatId).emit("SERVER_RETURN_ROOM", { roomChatId });
+    });
+    //client create room
+    socket.on("CLIENT_CREATE_ROOM", ({ room }) => {
+      room.users.forEach((member) => {
+        io.to(member.user_id.toString()).emit("SERVER_RETURN_NEW_ROOM", room);
+      });
+    });
+
     //disconnect
     socket.on("disconnect", async () => {
       const sockets = onlineUser.get(userId);
