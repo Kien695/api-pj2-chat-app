@@ -516,7 +516,7 @@ io.on("connection", async (socket) => {
         action: "remove",
       });
     });
-    //client leave group
+    //client leave group in roomChat
     socket.on("CLIENT_LEAVE_GROUP", async (data) => {
       const { roomChatId } = data;
 
@@ -546,6 +546,44 @@ io.on("connection", async (socket) => {
         action: "leave",
       });
     });
+    //client leave group-trả về danh sách group hiện tại
+    socket.on("CLIENT_LEAVE_ROOM_PERSON", async ({ roomChatId }) => {
+      socket.leave(roomChatId);
+      // gửi cho người rời
+      socket.emit("SERVER_LEAVE_ROOM_PERSON", {
+        roomChatId,
+      });
+      const systemMsg = await Chat.create({
+        room_chat_id: roomChatId,
+        user_id: user._id,
+        type: "system",
+        action: "leave_group",
+        content_user: user._id,
+      });
+      const roomChat = await RoomChat.findById(roomChatId)
+        .select("title typeRoom avatar users")
+        .populate({
+          path: "users.user_id",
+          select: "name avatar lastActive ",
+        });
+      // gửi cho người còn lại
+      const populatedMsg = await Chat.findById(systemMsg._id)
+        .populate("user_id", "name")
+        .populate("content_user", "name");
+      socket.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+      io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
+        roomChatId,
+        users: roomChat.users,
+        removedUserId: userId,
+        action: "leave",
+      });
+
+      socket.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
+        roomChatId,
+        userId,
+      });
+    });
+
     //client remove roomChat
     socket.on("CLIENT_REMOVE_ROOM", async (data) => {
       const { roomChatId } = data;

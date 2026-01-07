@@ -614,12 +614,12 @@ module.exports.getRoomChat = async (req, res) => {
       typeRoom: "group",
       "users.user_id": objectId,
     });
-    const countGroup = rooms.length;
+   
     return res.status(200).json({
       error: false,
       success: true,
       data: rooms,
-      count: countGroup,
+      
     });
   } catch (error) {
     return res.status(500).json({
