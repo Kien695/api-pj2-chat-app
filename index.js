@@ -9,6 +9,7 @@ const database = require("./config/database");
 const { app, server } = require("./socket/index");
 database.connect();
 const port = process.env.PORT;
+app.set("trust proxy", 1);
 // const app = express();
 app.use(
   cors({
