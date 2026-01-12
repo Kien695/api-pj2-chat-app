@@ -7,6 +7,12 @@ const middleware = require("../middleware/auth.middleware");
 const uploadCloud = require("../middleware/uploadCloud.middleware");
 const upload = multer();
 router.post("/register", validate.authRegister, controller.register);
+router.post(
+  "/change-password",
+  validate.authChangePassword,
+  middleware.auth,
+  controller.changePassword
+);
 router.post("/verify", validate.verifyEmail, controller.verifyEmail);
 router.post("/login", validate.authLogin, controller.login);
 router.post("/logout", middleware.auth, controller.logout);

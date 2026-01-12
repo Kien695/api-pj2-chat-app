@@ -8,6 +8,7 @@ const { generateAccessToken } = require("../utils/generateAccessToken");
 const { generateRefreshToken } = require("../utils/generateRefreshToken");
 const searchHelper = require("../helper/search");
 const Chat = require("../model/chat.model");
+const { myDocument } = require("../helper/createMyDocument");
 const cloudinary = require("cloudinary").v2;
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
@@ -58,6 +59,60 @@ module.exports.register = async (req, res) => {
       success: true,
       message: "Vui lòng xác minh email của bạn",
       token: token,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+//change password
+module.exports.changePassword = async (req, res) => {
+  try {
+    const userId = res.locals.userId;
+    const user = await User.findById(userId);
+    const { passwordOld, passwordNew, confirmPasswordNew } = req.body;
+
+    if (!user) {
+      return res.state(400).json({
+        message: "Người dùng không tồn tại",
+        error: true,
+        success: false,
+      });
+    }
+    const isMatch = await bcryptjs.compare(passwordOld, user.password);
+    if (!isMatch) {
+      return res.status(400).json({
+        message: "Mật khẩu cũ không chính xác",
+        error: true,
+        success: false,
+      });
+    }
+    const isSameOld = await bcryptjs.compare(passwordNew, user.password);
+    if (isSameOld) {
+      return res.status(400).json({
+        message: "Mật khẩu mới không được trùng mật khẩu cũ",
+        error: true,
+        success: false,
+      });
+    }
+    if (passwordNew !== confirmPasswordNew) {
+      return res.status(400).json({
+        error: true,
+        success: false,
+        message: "Mật khẩu không trùng khớp!",
+      });
+    }
+    const salt = await bcryptjs.genSalt(10);
+    const hashPasswordNew = await bcryptjs.hash(passwordNew, salt);
+    user.password = hashPasswordNew;
+    await user.save();
+    return res.status(200).json({
+      error: false,
+      success: true,
+      message: "Đổi mật khẩu thành công!",
     });
   } catch (error) {
     return res.status(500).json({
@@ -148,6 +203,9 @@ module.exports.login = async (req, res) => {
     };
     res.cookie("accessToken", accessToken, cookiesOption);
     res.cookie("refreshToken", refreshToken, cookiesOption);
+    //tạo my document nếu chưa có
+
+    await myDocument(user._id);
     return res.status(200).json({
       error: false,
       success: true,
@@ -596,7 +654,7 @@ module.exports.createRoomChat = async (req, res) => {
       message: "Phòng chat được tạo thành công",
       error: false,
       success: true,
-      data:roomChat,
+      data: roomChat,
     });
   } catch (error) {
     return res.status(500).json({
@@ -614,12 +672,11 @@ module.exports.getRoomChat = async (req, res) => {
       typeRoom: "group",
       "users.user_id": objectId,
     });
-   
+
     return res.status(200).json({
       error: false,
       success: true,
       data: rooms,
-      
     });
   } catch (error) {
     return res.status(500).json({

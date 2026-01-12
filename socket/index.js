@@ -79,8 +79,6 @@ io.on("connection", async (socket) => {
     //message
     socket.on("CLIENT_SEND_MESSAGE", async (content) => {
       const { message, images, roomChatId, file } = content;
-      console.log(file);
-      console.log(message);
       let uploadsImages = [];
 
       if (images && images.length > 0) {

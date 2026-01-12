@@ -46,3 +46,15 @@ module.exports.authResetPassword = (req, res, next) => {
   }
   next();
 };
+//change-password
+module.exports.authChangePassword = (req, res, next) => {
+  const { passwordOld, passwordNew, confirmPasswordNew } = req.body;
+  if (!passwordOld || !passwordNew || !confirmPasswordNew) {
+    return res.status(400).json({
+      error: true,
+      success: false,
+      message: "Vui lòng nhập đầy đủ thông tin",
+    });
+  }
+  next();
+};

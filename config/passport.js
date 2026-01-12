@@ -1,4 +1,5 @@
 var GoogleStrategy = require("passport-google-oauth20").Strategy;
+const { myDocument } = require("../helper/createMyDocument");
 const User = require("../model/user.model");
 const passport = require("passport");
 passport.use(
@@ -20,6 +21,8 @@ passport.use(
             verify_email: true,
           });
         }
+        //tạo my document nếu chưa có
+        await myDocument(user._id);
         return cb(null, user);
       } catch (error) {
         return cb(error, null);
