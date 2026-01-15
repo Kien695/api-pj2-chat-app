@@ -1,28 +1,40 @@
 const jwt = require("jsonwebtoken");
-module.exports.auth = async (req, res, next) => {
+
+module.exports.auth = (req, res, next) => {
   try {
     let token =
-      req.cookies.accessToken || req?.headers?.authorization?.split(" ")[1];
+      req.cookies?.accessToken ||
+      req.headers?.authorization?.split(" ")[1] ||
+      req.query?.token;
 
     if (!token) {
-      token = req.query.token;
-    }
-    const decode = jwt.verify(token, process.env.JWT_ACCESS_TOKEN);
-    if (!decode) {
-      return res.status(400).json({
+      return res.status(401).json({
         error: true,
         success: false,
-        message: "Token không hợp lệ",
+        message: "Chưa đăng nhập",
       });
-    } else {
-      res.locals.userId = decode.id;
-      next();
     }
+
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_TOKEN);
+
+    res.locals.userId = decoded.id;
+    next();
   } catch (error) {
-    return res.status(500).json({
+    //  BẮT RIÊNG TOKEN HẾT HẠN
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({
+        error: true,
+        success: false,
+        message: "Token đã hết hạn",
+        expired: true,
+      });
+    }
+
+    // token sai / bị sửa
+    return res.status(401).json({
       error: true,
       success: false,
-      message: "Vui lòng đăng nhập!",
+      message: "Token không hợp lệ",
     });
   }
 };

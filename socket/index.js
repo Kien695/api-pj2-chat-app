@@ -140,6 +140,7 @@ io.on("connection", async (socket) => {
         avatar: user.avatar,
         images: uploadsImages,
         files: file,
+
         createdAt: now,
         unreadCountForUsers,
       };
@@ -153,6 +154,29 @@ io.on("connection", async (socket) => {
         }
       });
     });
+    //remove message
+    socket.on(
+      "CLIENT_REMOVE_MESSAGE",
+      async ({ selectedMessageId, roomChatId }) => {
+        try {
+          const message = await Chat.findById(selectedMessageId);
+          if (!message) return;
+
+          const isMe = message.user_id.toString() === userId;
+
+          if (!isMe) return;
+
+          await Chat.findByIdAndUpdate(selectedMessageId, {
+            deleted: true,
+            deletedAt: new Date(),
+          });
+
+          io.to(roomChatId).emit("SERVER_MESSAGE_DELETED", selectedMessageId);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    );
 
     //typing
     socket.on("CLIENT_SEND_TYPING", async (type) => {
@@ -201,16 +225,7 @@ io.on("connection", async (socket) => {
           }
         );
       }
-      //trả về số lời mời kết bạn bên B
-      const infoUserB = await User.findOne({
-        _id: userId,
-      });
-      const lengthAcceptFriend = infoUserB.acceptFriends.length;
 
-      socket.broadcast.emit("SEVER_RETURN_LENGTH_ACCEPT_FRIEND", {
-        userId: userId,
-        lengthAcceptFriend: lengthAcceptFriend,
-      });
       //trả về thông tin A trong danh sách lời mời kết bạn của B
       const infoUserA = await User.findOne({
         _id: myUserId,
@@ -229,6 +244,7 @@ io.on("connection", async (socket) => {
     });
     //cancel add friend
     socket.on("CLIENT_CANCEL_FRIEND", async (userId) => {
+      console.log(userId);
       const myUserId = user._id;
       //xóa id của A trong acceptFriend của B
       const exitIdAinB = await User.findOne({
@@ -320,6 +336,11 @@ io.on("connection", async (socket) => {
         userIdB: myUserId,
         userIdA: userId,
       });
+      //trả về trạng thái nút button bên A
+      io.to(userId).emit("SERVER_FRIEND_STATUS", {
+        userId: myUserId,
+        status: "none",
+      });
     });
     //accept add friend
     socket.on("CLIENT_ACCEPT_FRIEND", async (userId) => {
@@ -370,6 +391,27 @@ io.on("connection", async (socket) => {
           }
         );
       }
+      //xóa thông tin A trong danh sách lời mời kết bạn bên B
+      socket.emit("SERVER_DELETE_INFO_A", {
+        userIdB: myUserId,
+        userIdA: userId,
+      });
+      //trả về thông tin A trong danh sách bạn bè của B
+      const infoUserA = await User.findOne({
+        _id: myUserId,
+      }).select(" -password -googleId -refresh_token");
+      //trả về thông tin B trong danh sách bạn bè của A
+      const infoUserB = await User.findOne({
+        _id: userId,
+      }).select(" -password -googleId -refresh_token");
+      //  realtime cho 2 người
+      io.to(myUserId.toString()).emit("SERVER_RETURN_LIST_FRIEND", {
+        friend: infoUserB,
+      });
+
+      io.to(userId).emit("SERVER_RETURN_LIST_FRIEND", {
+        friend: infoUserA,
+      });
     });
     //unfriend
     socket.on("CLIENT_UNFRIEND", async (userId) => {
@@ -615,7 +657,7 @@ io.on("connection", async (socket) => {
       console.log("disconnect user", socket.id);
     });
   } catch (error) {
-    console.log("Socket auth failed:", err.message);
+    console.log("Socket auth failed:", error.message);
     socket.disconnect(true);
   }
 });

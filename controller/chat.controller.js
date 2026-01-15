@@ -21,7 +21,6 @@ module.exports.index = async (req, res) => {
     // 1️ Lấy danh sách tin nhắn
     const chats = await Chat.find({
       room_chat_id: objectRoomChatId,
-      deleted: false,
     })
       .populate({
         path: "user_id",

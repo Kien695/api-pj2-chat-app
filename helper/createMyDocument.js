@@ -3,7 +3,7 @@ const RoomChat = require("../model/room-chat.model");
 module.exports.myDocument = async (userId) => {
   const room = await RoomChat.findOne({
     typeRoom: "system",
-    "users.userId": userId,
+    "users.user_id": userId,
   });
   if (!room) {
     await RoomChat.create({
@@ -16,4 +16,5 @@ module.exports.myDocument = async (userId) => {
       lastMessage: {},
     });
   }
+  return room;
 };

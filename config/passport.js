@@ -22,8 +22,11 @@ passport.use(
           });
         }
         //tạo my document nếu chưa có
-        await myDocument(user._id);
-        return cb(null, user);
+        const document = await myDocument(user._id);
+        return cb(null, {
+          user,
+          documentId: document._id,
+        });
       } catch (error) {
         return cb(error, null);
       }

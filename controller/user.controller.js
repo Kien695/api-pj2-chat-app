@@ -41,6 +41,9 @@ module.exports.register = async (req, res) => {
       otp_expiry: Date.now() + 600000,
     });
     user.save();
+    //tạo document
+    await myDocument(user._id);
+    //otp
     const subject = "Mã OTP xác minh";
     const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${verifyCode}</b>. Thời hạn sử dụng là: ${Math.ceil(
       600000 / 60000
@@ -205,7 +208,8 @@ module.exports.login = async (req, res) => {
     res.cookie("refreshToken", refreshToken, cookiesOption);
     //tạo my document nếu chưa có
 
-    await myDocument(user._id);
+    const document = await myDocument(user._id);
+   
     return res.status(200).json({
       error: false,
       success: true,
@@ -213,6 +217,7 @@ module.exports.login = async (req, res) => {
       data: {
         accessToken,
         refreshToken,
+        documentId: document._id,
       },
     });
   } catch (error) {
