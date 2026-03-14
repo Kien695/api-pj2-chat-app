@@ -88,7 +88,7 @@ io.on("connection", async (socket) => {
               folder: "chat_app",
             });
             return { url: result.secure_url, public_id: result.public_id };
-          })
+          }),
         );
       }
       if (message || images) {
@@ -113,37 +113,40 @@ io.on("connection", async (socket) => {
       });
       //Cập nhật room chat
       const now = new Date();
-      await RoomChat.findByIdAndUpdate(roomChatId, {
-        lastMessage: {
-          content: message,
-          images: uploadsImages,
-          files: file ? file : [],
-          sender: user._id,
-          createdAt: now,
+      const updatedRoom = await RoomChat.findByIdAndUpdate(
+        roomChatId,
+        {
+          lastMessage: {
+            content: message,
+            images: uploadsImages,
+            files: file ? file : [],
+            sender: user._id,
+            createdAt: now,
+          },
+          $inc: incObj,
+          $set: { [`unreadCount.${user._id.toString()}`]: 0 },
         },
-        $inc: incObj,
-        $set: { [`unreadCount.${user._id.toString()}`]: 0 },
-      });
+        { new: true },
+      );
 
       //trả data về client
       const unreadCountForUsers = {};
-      room.users.forEach((u) => {
+      updatedRoom.users.forEach((u) => {
         const uid = u.user_id.toString();
-        unreadCountForUsers[uid] =
-          uid === user._id.toString() ? 0 : (room.unreadCount?.[uid] || 0) + 1;
+        unreadCountForUsers[uid] = updatedRoom.unreadCount?.[uid] || 0;
       });
+
       const payload = {
-        // _id: chat._id,
         roomChatId,
         user_id: user._id,
         content: message,
         avatar: user.avatar,
         images: uploadsImages,
         files: file,
-
         createdAt: now,
         unreadCountForUsers,
       };
+
       io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
       room.users.forEach((u) => {
         const sockets = onlineUser.get(u.user_id.toString());
@@ -175,7 +178,7 @@ io.on("connection", async (socket) => {
         } catch (err) {
           console.error(err);
         }
-      }
+      },
     );
 
     //typing
@@ -206,7 +209,7 @@ io.on("connection", async (socket) => {
           },
           {
             $push: { acceptFriends: { id: myUserId, message: text } },
-          }
+          },
         );
       }
       const exitIdBinA = await User.findOne({
@@ -222,7 +225,7 @@ io.on("connection", async (socket) => {
             $push: {
               requestFriends: { id: userId, message: text },
             },
-          }
+          },
         );
       }
 
@@ -244,7 +247,6 @@ io.on("connection", async (socket) => {
     });
     //cancel add friend
     socket.on("CLIENT_CANCEL_FRIEND", async (userId) => {
-      console.log(userId);
       const myUserId = user._id;
       //xóa id của A trong acceptFriend của B
       const exitIdAinB = await User.findOne({
@@ -258,7 +260,7 @@ io.on("connection", async (socket) => {
           },
           {
             $pull: { acceptFriends: { id: myUserId } },
-          }
+          },
         );
       }
       //xóa id của B trong requestFriend của A
@@ -273,7 +275,7 @@ io.on("connection", async (socket) => {
           },
           {
             $pull: { requestFriends: { id: userId } },
-          }
+          },
         );
       }
       //trả về số lời mời kết bạn bên B
@@ -313,7 +315,7 @@ io.on("connection", async (socket) => {
           },
           {
             $pull: { acceptFriends: { id: userId } },
-          }
+          },
         );
       }
       //xóa id của B trong requestFriend của A
@@ -328,7 +330,7 @@ io.on("connection", async (socket) => {
           },
           {
             $pull: { requestFriends: { id: myUserId } },
-          }
+          },
         );
       }
       //xóa thông tin A trong danh sách lời mời kết bạn bên B
@@ -376,7 +378,7 @@ io.on("connection", async (socket) => {
             $addToSet: {
               FriendList: { user_id: userId, room_chat_id: roomChat._id },
             },
-          }
+          },
         );
       }
 
@@ -388,7 +390,7 @@ io.on("connection", async (socket) => {
             $addToSet: {
               FriendList: { user_id: myUserId, room_chat_id: roomChat._id },
             },
-          }
+          },
         );
       }
       //xóa thông tin A trong danh sách lời mời kết bạn bên B
@@ -419,18 +421,18 @@ io.on("connection", async (socket) => {
       //lấy room chat giữa 2 người
       const myInfo = await User.findById(myUserId);
       const friendInfo = myInfo.FriendList.find(
-        (item) => item.user_id === userId
+        (item) => item.user_id === userId,
       );
       if (!friendInfo) return;
       const roomChatId = friendInfo.room_chat_id;
       //xóa bạn bè khỏi danh sách bạn bè của 2 người
       await User.updateOne(
         { _id: myUserId },
-        { $pull: { FriendList: { user_id: userId } } }
+        { $pull: { FriendList: { user_id: userId } } },
       );
       await User.updateOne(
         { _id: userId },
-        { $pull: { FriendList: { user_id: myUserId } } }
+        { $pull: { FriendList: { user_id: myUserId } } },
       );
       //xóa room chat
       await RoomChat.findByIdAndDelete(roomChatId);
@@ -476,7 +478,7 @@ io.on("connection", async (socket) => {
       });
       const populatedMsg = await Chat.findById(systemMsg._id).populate(
         "user_id",
-        "name"
+        "name",
       );
       io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
       io.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
@@ -492,7 +494,7 @@ io.on("connection", async (socket) => {
       // Lấy info user mới thêm
       const newUsers = await User.find(
         { _id: { $in: member } },
-        "name avatar lastActive"
+        "name avatar lastActive",
       );
 
       const systemMsg = await Chat.create({
@@ -502,15 +504,16 @@ io.on("connection", async (socket) => {
         action: "add_member",
         content_user: member,
       });
+
       const roomChat = await RoomChat.findById(roomChatId).populate(
         "users.user_id",
-        "name avatar lastActive"
+        "name avatar lastActive",
       );
 
       const populatedMsg = await Chat.findById(systemMsg._id)
         .populate("user_id", "name")
         .populate("content_user", "name");
-
+      
       io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
 
       io.to(roomChatId).emit("SERVER_ROOM_UPDATED_USER", {
@@ -647,7 +650,7 @@ io.on("connection", async (socket) => {
         const lastActive = new Date();
         await User.updateOne(
           { _id: userId },
-          { status: "offline", lastActive }
+          { status: "offline", lastActive },
         );
         socket.broadcast.emit("SERVER_USER_OFFLINE", {
           userId: userId,

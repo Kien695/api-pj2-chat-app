@@ -35,8 +35,7 @@ const roomChatSchema = new mongoose.Schema(
 
     //  UNREAD THEO USER
     unreadCount: {
-      type: Map,
-      of: Number,
+      type: Object,
       default: {},
     },
 
@@ -44,7 +43,7 @@ const roomChatSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 const RoomChat = mongoose.model("RoomChat", roomChatSchema, "rooms-chat");
 module.exports = RoomChat;

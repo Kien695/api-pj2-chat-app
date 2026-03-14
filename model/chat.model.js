@@ -14,7 +14,7 @@ const chatSchema = new mongoose.Schema(
           url: String,
           public_id: String,
         },
-        { _id: false }
+        { _id: false },
       ),
     ],
     video: String,
@@ -28,7 +28,7 @@ const chatSchema = new mongoose.Schema(
           size: { type: Number },
           type: { type: String },
         },
-        { _id: false }
+        { _id: false },
       ),
     ],
 
@@ -55,7 +55,7 @@ const chatSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 // if (mongoose.models.Chat) {
 //   delete mongoose.models.Chat;

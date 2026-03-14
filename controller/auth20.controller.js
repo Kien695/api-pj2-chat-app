@@ -1,16 +1,18 @@
 const jwt = require("jsonwebtoken");
+const { generateRefreshToken } = require("../utils/generateRefreshToken");
+const { generateAccessToken } = require("../utils/generateAccessToken");
 //login oauth20
 module.exports.login = async (req, res) => {
   try {
-    const token = jwt.sign(
-      { id: req.user.user._id },
-      process.env.JWT_ACCESS_TOKEN,
-      {
-        expiresIn: "7d",
-      }
-    );
+    const accessToken = await generateAccessToken(req.user.user._id);
+    const refreshToken = await generateRefreshToken(req.user.user._id);
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+    });
     res.redirect(
-      `${process.env.CLIENT_URL}/auth-success?token=${token}&documentId=${req.user.documentId}`
+      `${process.env.CLIENT_URL}/auth-success?token=${accessToken}&documentId=${req.user.documentId}`,
     );
   } catch (error) {
     console.log("Google OAuth Error:", error);

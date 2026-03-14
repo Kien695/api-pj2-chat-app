@@ -40,28 +40,20 @@ module.exports.register = async (req, res) => {
       otp: verifyCode,
       otp_expiry: Date.now() + 600000,
     });
-    user.save();
+    await user.save();
     //tạo document
     await myDocument(user._id);
     //otp
     const subject = "Mã OTP xác minh";
     const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${verifyCode}</b>. Thời hạn sử dụng là: ${Math.ceil(
-      600000 / 60000
+      600000 / 60000,
     )} phút`;
     const verifyEmail = await sendMail(email, subject, html);
 
-    const token = jwt.sign(
-      {
-        email: user.email,
-        id: user._id,
-      },
-      process.env.JWT_SECRET_KEY
-    );
     return res.status(200).json({
       error: false,
       success: true,
       message: "Vui lòng xác minh email của bạn",
-      token: token,
     });
   } catch (error) {
     return res.status(500).json({
@@ -198,25 +190,24 @@ module.exports.login = async (req, res) => {
     }
     const accessToken = await generateAccessToken(user._id);
     const refreshToken = await generateRefreshToken(user._id);
-
     const cookiesOption = {
       httpOnly: true,
       secure: false, //deloy phải bật lại
-      sameSite: "None",
+      sameSite: "lax",
     };
-    res.cookie("accessToken", accessToken, cookiesOption);
+
     res.cookie("refreshToken", refreshToken, cookiesOption);
     //tạo my document nếu chưa có
 
     const document = await myDocument(user._id);
-   
+
     return res.status(200).json({
       error: false,
       success: true,
       message: "Đăng nhập thành công",
       data: {
         accessToken,
-        refreshToken,
+
         documentId: document._id,
       },
     });
@@ -235,7 +226,7 @@ module.exports.logout = async (req, res) => {
     const cookiesOption = {
       httpOnly: true,
       secure: true,
-      samSite: "None",
+      sameSite: "None",
     };
     res.clearCookie("accessToken", cookiesOption);
     res.clearCookie("refreshToken", cookiesOption);
@@ -243,7 +234,7 @@ module.exports.logout = async (req, res) => {
       { _id: userId },
       {
         refresh_token: "",
-      }
+      },
     );
     return res.status(200).json({
       success: true,
@@ -277,11 +268,11 @@ module.exports.forgotPassword = async (req, res) => {
         otp: verifyCode,
         otp_expiry: 600000 + Date.now(),
       },
-      { new: true }
+      { new: true },
     );
     const subject = "Mã OTP xác minh";
     const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${verifyCode}</b>. Thời hạn sử dụng là: ${Math.ceil(
-      600000 / 60000
+      600000 / 60000,
     )} phút`;
     const verifyEmail = await sendMail(email, subject, html);
     return res.json({
@@ -381,6 +372,7 @@ module.exports.refreshToken = async (req, res) => {
   try {
     const refreshToken =
       req.cookies.refreshToken || req?.headers?.authorization?.split(" ")[1];
+    
     if (!refreshToken) {
       return res.status(400).json({
         message: "Token không hợp lệ",
@@ -398,12 +390,6 @@ module.exports.refreshToken = async (req, res) => {
     }
     const userId = verifyToken?.id;
     const newAccessToken = await generateAccessToken(userId);
-    const cookiesOption = {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-    };
-    res.cookie("accessToken", cookiesOption);
     return res.status(200).json({
       error: false,
       success: true,
@@ -491,11 +477,9 @@ module.exports.updateUser = async (req, res) => {
       return res.status(400).send("Tài khoản không được cập nhật");
     }
     // Cập nhật user
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { $set: req.body },
-      { new: true }
-    );
+    const updatedUser = await User.findByIdAndUpdate(userId, req.body, {
+      new: true,
+    });
     return res.status(200).json({
       message: "Chỉnh sửa tài khoản thành công",
       error: false,
@@ -520,16 +504,16 @@ module.exports.getUser = async (req, res) => {
 
     // Search
     const objectSearch = searchHelper(req.query);
-    if (objectSearch.$or) find.$or = objectSearch.$or;
+    if (objectSearch.mobile) find.mobile = objectSearch.mobile;
 
     const users = await User.find(find).select(
-      "-password -refresh_token -googleId"
+      "-password -refresh_token -googleId",
     );
 
     // Gắn trạng thái pending nếu user có trong requestFriends
     const dataWithStatus = users.map((u) => {
       const isPending = myUser.requestFriends.some(
-        (rf) => rf.id.toString() === u._id.toString()
+        (rf) => rf.id.toString() === u._id.toString(),
       );
       return { ...u.toObject(), friendStatus: isPending ? "pending" : "none" };
     });
@@ -586,7 +570,7 @@ module.exports.friendInvite = async (req, res) => {
     const users = await User.find({
       _id: { $in: acceptFriendIds },
     }).select(
-      "name email avatar background date_of_birth mobile gender requestFriends"
+      "name email avatar background date_of_birth mobile gender requestFriends",
     );
 
     return res.status(200).json({
@@ -614,7 +598,7 @@ module.exports.friendList = async (req, res) => {
     }).select("name email avatar background date_of_birth mobile gender");
     const usersWithInfo = users.map((user) => {
       const infoFriend = friendList.find(
-        (f) => f.user_id.toString() === user._id.toString()
+        (f) => f.user_id.toString() === user._id.toString(),
       );
       return {
         ...user.toObject(),
@@ -744,7 +728,7 @@ module.exports.editRoomChat = async (req, res) => {
     const roomChatUpdated = await RoomChat.findByIdAndUpdate(
       roomChatId,
       { $set: updatedData },
-      { new: true }
+      { new: true },
     ).select("title avatar");
     return res.status(200).json({
       success: true,
@@ -769,7 +753,7 @@ module.exports.searchUser = async (req, res) => {
       _id: { $ne: userId },
       $or: [{ email: keyword }, { mobile: keyword }],
     }).select(
-      "-password -refresh_token -googleId -requestFriends -acceptFriends -FriendList"
+      "-password -refresh_token -googleId -requestFriends -acceptFriends -FriendList",
     );
 
     if (!user) {
@@ -822,7 +806,7 @@ module.exports.addMember = async (req, res) => {
         { _id: roomChatId },
         {
           $push: { users: { $each: userObjects } },
-        }
+        },
       );
     }
 
@@ -856,7 +840,7 @@ module.exports.removeMember = async (req, res) => {
 
     // 1️ Check user hiện tại có phải admin không
     const currentUser = roomChat.users.find(
-      (u) => u.user_id.toString() === currentUserId
+      (u) => u.user_id.toString() === currentUserId,
     );
 
     if (!currentUser || currentUser.role !== "admin") {
@@ -868,7 +852,7 @@ module.exports.removeMember = async (req, res) => {
 
     // 2️ Kiểm tra thành viên tồn tại trong nhóm
     const member = roomChat.users.find(
-      (u) => u.user_id.toString() === memberId
+      (u) => u.user_id.toString() === memberId,
     );
 
     if (!member) {
@@ -920,7 +904,7 @@ module.exports.leaveGroup = async (req, res) => {
 
     // 1 Kiểm tra thành viên tồn tại trong nhóm
     const member = roomChat.users.find(
-      (u) => u.user_id.toString() === currentUserId
+      (u) => u.user_id.toString() === currentUserId,
     );
 
     if (!member) {
@@ -968,7 +952,7 @@ module.exports.removeRoom = async (req, res) => {
         .json({ success: false, message: "Phòng chat không tồn tại" });
     }
     const isAdmin = room.users.some(
-      (u) => u.user_id.toString() === userId.toString() && u.role === "admin"
+      (u) => u.user_id.toString() === userId.toString() && u.role === "admin",
     );
 
     if (!isAdmin) {
@@ -985,10 +969,10 @@ module.exports.removeRoom = async (req, res) => {
     // Tạo mảng tất cả promise xóa ảnh + file của tất cả chat
     const allDestroyPromises = chats.flatMap((item) => {
       const imagePromises = item.images.map((image) =>
-        cloudinary.uploader.destroy(image.public_id)
+        cloudinary.uploader.destroy(image.public_id),
       );
       const filePromises = item.files.map((file) =>
-        cloudinary.uploader.destroy(file.public_id)
+        cloudinary.uploader.destroy(file.public_id),
       );
       return [...imagePromises, ...filePromises];
     });

@@ -28,15 +28,14 @@ module.exports.index = async (req, res) => {
       })
       .populate({
         path: "content_user",
-        select: "name avatar",
+        select: "name avatar ",
       });
-
     // 2️ Lấy room chat
     const room = await RoomChat.findById(objectRoomChatId)
       .select("title typeRoom avatar users")
       .populate({
         path: "users.user_id",
-        select: "name avatar lastActive ",
+        select: "name avatar date_of_birth gender mobile lastActive ",
       });
 
     if (!room) {
@@ -55,7 +54,7 @@ module.exports.index = async (req, res) => {
 
     // 3️ Lọc user KHÔNG phải là mình
     let otherUsers = [];
-
+    let commonGroupCount = 0;
     if (room.typeRoom === "group") {
       // Group chat: lấy tất cả user (kể cả mình)
       const admins = room.users.filter((u) => u.role === "admin");
@@ -67,10 +66,20 @@ module.exports.index = async (req, res) => {
     } else {
       // Friend / private chat: chỉ lấy 1 user còn lại
       const otherUser = room.users.find(
-        (u) => u.user_id && u.user_id._id.toString() !== objectUserId.toString()
+        (u) =>
+          u.user_id && u.user_id._id.toString() !== objectUserId.toString(),
       );
 
       otherUsers = otherUser ? [otherUser] : [];
+
+      if (otherUser) {
+        const otherUserId = otherUser.user_id._id;
+
+        commonGroupCount = await RoomChat.countDocuments({
+          typeRoom: "group",
+          "users.user_id": { $all: [objectUserId, otherUserId] },
+        });
+      }
     }
 
     return res.status(200).json({
@@ -78,6 +87,7 @@ module.exports.index = async (req, res) => {
       data: chats,
       room: roomInfo,
       users: otherUsers,
+      commonGroupCount: commonGroupCount,
     });
   } catch (error) {
     return res.status(500).json({
