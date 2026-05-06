@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    image: tankien/api_chat:v1
+    container_name: server-chat-api
+    platform: linux/amd64
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env

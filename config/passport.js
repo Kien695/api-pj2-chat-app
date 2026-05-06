@@ -7,7 +7,7 @@ passport.use(
     {
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: "/auth/google/callback",
+      callbackURL: process.env.CALLBACK_URL,
     },
     async (accessToken, _refreshToken, profile, cb) => {
       try {
@@ -16,8 +16,8 @@ passport.use(
           user = await User.create({
             googleId: profile.id,
             name: profile.displayName,
-            email: profile.emails[0].value,
-            avatar: profile.photos[0].value,
+            email: profile.emails?.[0]?.value || "",
+            avatar: profile.photos?.[0]?.value || "",
             verify_email: true,
           });
         }
