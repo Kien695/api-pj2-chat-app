@@ -5,6 +5,6 @@ services:
     container_name: server-chat-api
     platform: linux/amd64
     ports:
-      - "3000:3000"
+      - "4000:4000"
     env_file:
       - ./.env

@@ -513,7 +513,7 @@ io.on("connection", async (socket) => {
       const populatedMsg = await Chat.findById(systemMsg._id)
         .populate("user_id", "name")
         .populate("content_user", "name");
-      
+
       io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
 
       io.to(roomChatId).emit("SERVER_ROOM_UPDATED_USER", {
