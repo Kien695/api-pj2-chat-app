@@ -1,7 +1,10 @@
 const mongoose = require("mongoose");
+const redis = require("../config/redis");
 const User = require("../model/user.model");
 const RoomChat = require("../model/room-chat.model");
+const Passkey = require("../model/passkey.model");
 const bcryptjs = require("bcryptjs");
+const { randomUUID } = require("crypto");
 const jwt = require("jsonwebtoken");
 const { sendMail } = require("../config/sendMail");
 const { generateAccessToken } = require("../utils/generateAccessToken");
@@ -9,6 +12,12 @@ const { generateRefreshToken } = require("../utils/generateRefreshToken");
 const searchHelper = require("../helper/search");
 const Chat = require("../model/chat.model");
 const { myDocument } = require("../helper/createMyDocument");
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} = require("@simplewebauthn/server");
 const cloudinary = require("cloudinary").v2;
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
@@ -16,6 +25,9 @@ cloudinary.config({
   api_secret: process.env.CLOUD_SECRET,
   secure: true,
 });
+const origin = process.env.CLIENT_ORIGIN;
+const rpID = process.env.RP_ID;
+const rpName = process.env.RP_NAME;
 //register
 module.exports.register = async (req, res) => {
   try {
@@ -192,7 +204,7 @@ module.exports.login = async (req, res) => {
     const refreshToken = await generateRefreshToken(user._id);
     const cookiesOption = {
       httpOnly: true,
-      secure: false, //deloy phải bật lại
+      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
     };
 
@@ -372,7 +384,7 @@ module.exports.refreshToken = async (req, res) => {
   try {
     const refreshToken =
       req.cookies.refreshToken || req?.headers?.authorization?.split(" ")[1];
-    
+
     if (!refreshToken) {
       return res.status(400).json({
         message: "Token không hợp lệ",
@@ -406,15 +418,278 @@ module.exports.refreshToken = async (req, res) => {
     });
   }
 };
+
+//passkey register options
+module.exports.passkeyRegisterOptions = async (req, res) => {
+  try {
+    const user = await User.findById(res.locals.userId);
+
+    if (!user)
+      return res
+        .status(400)
+        .json({ error: true, message: "Không tìm thấy người dùng" });
+    const passkeys = await Passkey.find({ user: user._id });
+
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userName: user.email,
+      userDisplayName: user.name,
+      attestationType: "none",
+      excludeCredentials: passkeys?.map((passkey) => ({
+        id: passkey.credentialID,
+        transports: passkey.transports,
+      })),
+      authenticatorSelection: {
+        residentKey: "preferred",
+        userVerification: "required",
+        authenticatorAttachment: "platform",
+      },
+    });
+
+    const challengeId = randomUUID();
+
+    await redis.set(
+      `passkey-register:${challengeId}`,
+      JSON.stringify({
+        challenge: options.challenge,
+        webauthnUserID: options.user.id,
+        userId: user._id,
+      }),
+      {
+        EX: 300,
+      },
+    );
+
+    return res.status(200).json({
+      ...options,
+      challengeId,
+      success: true,
+    });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Lỗi server", error: true, success: false });
+  }
+};
+//passkey register verify
+module.exports.passkeyRegisterVerify = async (req, res) => {
+  const { challengeId, credential: registrationResponse } = req.body;
+
+  const pending = await redis.get(`passkey-register:${challengeId}`);
+  if (!pending) {
+    return res.status(400).json({
+      message: "Phiên đăng ký Passkey đã hết hạn",
+    });
+  }
+  const challengeData = JSON.parse(pending);
+  try {
+    const verification = await verifyRegistrationResponse({
+      response: registrationResponse,
+      expectedChallenge: challengeData.challenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      requireUserVerification: true,
+    });
+
+    if (!verification.verified || !verification.registrationInfo) {
+      return res.status(400).json({ message: "Không thể xác minh Passkey" });
+    }
+
+    const user = await User.findById(challengeData.userId);
+    if (!user) {
+      return res.status(404).json({
+        message: "Tài khoản không tồn tại!",
+        error: true,
+      });
+    }
+    const { credential, credentialDeviceType, credentialBackedUp } =
+      verification.registrationInfo;
+
+    const credentialID = credential.id;
+
+    const exists = await Passkey.findOne({
+      credentialID,
+    });
+
+    if (!exists) {
+      await Passkey.create({
+        credentialID,
+        publicKey: Buffer.from(credential.publicKey),
+        counter: credential.counter,
+        transports: registrationResponse.response.transports || [],
+        deviceType: credentialDeviceType,
+        backedUp: credentialBackedUp,
+        user: user._id,
+      });
+    }
+
+    await redis.del(`passkey-register:${challengeId}`);
+    return res
+      .status(200)
+      .json({ success: true, message: "Đăng ký Passkey thành công" });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: error.message || "Đăng ký Passkey thất bại" });
+  } finally {
+    await redis.del(`passkey-register:${challengeId}`);
+  }
+};
+
+//passkey login options
+module.exports.passkeyLoginOptions = async (req, res) => {
+  try {
+    const challengeId = randomUUID();
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      userVerification: "required",
+    });
+
+    await redis.set(`passkey:${challengeId}`, options.challenge, {
+      EX: 300, // 5 phút
+    });
+    res.status(200).json({
+      success: true,
+      ...options,
+      challengeId,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || "Lỗi server",
+      error: true,
+      success: false,
+    });
+  }
+};
+
+//passkey login verify
+module.exports.passkeyLoginVerify = async (req, res) => {
+  const { challengeId, credential } = req.body;
+
+  const expectedChallenge = await redis.get(`passkey:${challengeId}`);
+  if (!expectedChallenge) {
+    return res.status(400).json({
+      error: true,
+      message: "Challenge đã hết hạn",
+    });
+  }
+  const credentialResponse = credential;
+  const credentialID = credentialResponse.id;
+
+  const passkey = await Passkey.findOne({
+    credentialID,
+  });
+
+  if (!passkey) {
+    return res.status(404).json({
+      error: true,
+      success: false,
+      message: "Tài khoản chưa đăng kí xác thực!",
+    });
+  }
+
+  const user = await User.findById(passkey.user);
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      error: true,
+      message: "Không tìm thấy người dùng",
+    });
+  }
+
+  try {
+    const verification = await verifyAuthenticationResponse({
+      response: credentialResponse,
+      expectedChallenge: expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      requireUserVerification: true,
+      credential: {
+        id: passkey.credentialID,
+        publicKey: new Uint8Array(passkey.publicKey),
+        counter: passkey.counter,
+        transports: passkey.transports,
+      },
+    });
+
+    if (!verification.verified) {
+      return res
+        .status(401)
+        .json({ error: true, message: "Xác minh Passkey thất bại" });
+    }
+
+    passkey.counter = verification.authenticationInfo.newCounter;
+    await passkey.save();
+    await redis.del(`passkey:${challengeId}`);
+
+    const accessToken = await generateAccessToken(user._id);
+    const refreshToken = await generateRefreshToken(user._id);
+    const cookiesOption = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+    };
+
+    res.cookie("refreshToken", refreshToken, cookiesOption);
+    //tạo my document nếu chưa có
+
+    const document = await myDocument(user._id);
+
+    return res.status(200).json({
+      error: false,
+      success: true,
+      message: "Đăng nhập thành công",
+      data: {
+        accessToken,
+
+        documentId: document._id,
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: error.message || "Đăng nhập Passkey thất bại" });
+  } finally {
+    await redis.del(`passkey:${challengeId}`);
+  }
+};
+
+//delete passkey
+module.exports.deletePasskey = async (req, res) => {
+  try {
+    await Passkey.deleteMany({
+      user: res.locals.userId,
+    });
+    return res.status(200).json({
+      success: true,
+      error: false,
+      message: "Đã tắt Passkey thành công.",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: true,
+      success: false,
+      message: error.message || "Lỗi server",
+    });
+  }
+};
 //user Detail
 module.exports.userDetail = async (req, res) => {
   try {
     const userId = res.locals.userId;
-    const user = await User.findById(userId).select("-password -refreshToken");
+    const user = await User.findById(userId)
+      .select("-password -refreshToken")
+      .lean();
+    const hasPasskey = await Passkey.exists({
+      user: userId,
+    });
     return res.status(200).json({
       message: "Chi tiết người dùng",
       error: false,
-      data: user,
+      data: { ...user, hasPasskey: !!hasPasskey },
       success: true,
     });
   } catch (error) {
@@ -626,10 +901,11 @@ module.exports.createRoomChat = async (req, res) => {
   try {
     const userId = res.locals.userId;
     const { title, members } = req.body;
-
+    const inviteToken = randomUUID();
     const dataRoom = {
       title: title || "",
       typeRoom: "group",
+      inviteToken: inviteToken,
       users: [],
     };
     for (const userId of members) {
@@ -994,3 +1270,26 @@ module.exports.removeRoom = async (req, res) => {
     });
   }
 };
+
+//join group
+// module.exports.joinGroup = async (req, res) => {
+//   try {
+//     const { inviteId } = req.body;
+//     const group=await RoomChat.findOne({
+//       inviteToken:inviteId
+//     })
+//     if(!group){
+//       return res.status(404).json({
+//         message:"Nhóm không tòn tại!",
+//         error:true,
+//         message:false
+//       })
+//     }
+//   } catch (error) {
+//     return res.status(500).json({
+//       message: error.message || error,
+//       error: true,
+//       success: false,
+//     });
+//   }
+// };

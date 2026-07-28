@@ -11,7 +11,7 @@ router.post(
   "/change-password",
   validate.authChangePassword,
   middleware.auth,
-  controller.changePassword
+  controller.changePassword,
 );
 router.post("/verify", validate.verifyEmail, controller.verifyEmail);
 router.post("/login", validate.authLogin, controller.login);
@@ -20,21 +20,37 @@ router.post("/forgot-password", controller.forgotPassword);
 router.post(
   "/verifyForgot",
   validate.verifyEmail,
-  controller.verifyForgotPassword
+  controller.verifyForgotPassword,
 );
 router.post(
   "/reset-password",
   validate.authResetPassword,
-  controller.resetPassword
+  controller.resetPassword,
 );
 router.post("/refreshToken", controller.refreshToken);
+
+router.post(
+  "/passkey/register/options",
+  middleware.auth,
+  controller.passkeyRegisterOptions,
+);
+router.post(
+  "/passkey/register/verify",
+  middleware.auth,
+  controller.passkeyRegisterVerify,
+);
+router.post("/passkey/login/options", controller.passkeyLoginOptions);
+router.post("/passkey/login/verify", controller.passkeyLoginVerify);
+
+router.delete("/passkey/delete", middleware.auth, controller.deletePasskey);
+
 router.get("/getUser", middleware.auth, controller.userDetail);
 router.patch(
   "/updateImage",
   upload.single("image"),
   uploadCloud.uploadOne,
   middleware.auth,
-  controller.userImage
+  controller.userImage,
 );
 router.patch("/updateUser", middleware.auth, controller.updateUser);
 router.get("/getUserFind", middleware.auth, controller.getUser);
@@ -49,7 +65,7 @@ router.patch(
   upload.single("image"),
   uploadCloud.uploadOne,
   middleware.auth,
-  controller.editRoomChat
+  controller.editRoomChat,
 );
 router.get("/getAllRoomChat", middleware.auth, controller.getAllRoomChat);
 router.patch("/addMember/:id", middleware.auth, controller.addMember);
@@ -58,6 +74,6 @@ router.patch("/leaveGroup/:id", middleware.auth, controller.leaveGroup);
 router.delete(
   "/removeRoom/:roomChatId",
   middleware.auth,
-  controller.removeRoom
+  controller.removeRoom,
 );
 module.exports = router;

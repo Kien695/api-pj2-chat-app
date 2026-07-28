@@ -33,8 +33,8 @@ const userSchema = new mongoose.Schema(
     },
     mobile: {
       type: String,
-      default: "",
       unique: true,
+      sparse: true,
     },
     gender: {
       type: String,
@@ -83,7 +83,7 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 const User = mongoose.model("User", userSchema, "users");
 module.exports = User;

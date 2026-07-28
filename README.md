@@ -5,7 +5,7 @@ Xây dựng RESTful API kết hợp WebSocket Server phục vụ hệ thống m�
 ## Tính năng & Công nghệ
 
 - **Authentication & Authorization:**
-  - Xây dựng xác thực người dùng bằng JWT.
+  - Xây dựng xác thực người dùng bằng JWT, passkeys.
   - Hỗ trợ OAuth 2.0 với Google.
   - Xử lý luồng quên mật khẩu qua email.
 

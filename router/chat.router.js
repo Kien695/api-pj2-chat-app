@@ -12,6 +12,8 @@ router.post(
   "/:roomChatId",
   upload.array("files"),
   cloudinary.uploadFile,
-  controller.create
+  controller.create,
 );
+
+// router.post("/room/join-group");
 module.exports = router;

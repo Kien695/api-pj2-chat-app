@@ -12,6 +12,7 @@ const roomChatSchema = new mongoose.Schema(
     },
     typeRoom: String,
     status: String,
+    inviteToken: String,
     users: [
       {
         user_id: {
@@ -29,6 +30,11 @@ const roomChatSchema = new mongoose.Schema(
       sender: {
         type: mongoose.Schema.ObjectId,
         ref: "User",
+      },
+      type: {
+        type: String,
+        enum: ["text", "image", "file", "emoji", "system","invite"],
+        default: "text",
       },
       createdAt: Date,
     },

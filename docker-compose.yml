@@ -8,3 +8,19 @@ services:
       - "4000:4000"
     env_file:
       - ./.env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: redis_chat
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    expose:
+      - "6379" # Chỉ cho phép các container cùng mạng truy cập, không mở ra Internet
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  redis_data:

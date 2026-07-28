@@ -5,6 +5,7 @@ const RoomChat = require("../model/room-chat.model");
 module.exports.index = async (req, res) => {
   try {
     const roomChatId = req.params.roomChatId;
+
     const userId = res.locals.userId;
 
     // validate ObjectId
@@ -32,7 +33,7 @@ module.exports.index = async (req, res) => {
       });
     // 2️ Lấy room chat
     const room = await RoomChat.findById(objectRoomChatId)
-      .select("title typeRoom avatar users")
+      .select("title typeRoom avatar users inviteToken")
       .populate({
         path: "users.user_id",
         select: "name avatar date_of_birth gender mobile lastActive ",
@@ -50,6 +51,8 @@ module.exports.index = async (req, res) => {
       title: room.title,
       typeRoom: room.typeRoom,
       avatar: room.avatar,
+
+      inviteToken: room.inviteToken || "",
     };
 
     // 3️ Lọc user KHÔNG phải là mình

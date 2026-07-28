@@ -78,7 +78,8 @@ io.on("connection", async (socket) => {
     console.log("connected user", userId, socket.id);
     //message
     socket.on("CLIENT_SEND_MESSAGE", async (content) => {
-      const { message, images, roomChatId, file } = content;
+      const { message, images, roomChatId, file, type } = content;
+
       let uploadsImages = [];
 
       if (images && images.length > 0) {
@@ -91,77 +92,89 @@ io.on("connection", async (socket) => {
           }),
         );
       }
-      if (message || images) {
-        const chat = new Chat({
-          user_id: user._id,
-          room_chat_id: roomChatId,
-          content: message,
-          images: uploadsImages,
-        });
-        await chat.save();
-      }
-
-      //Lấy room
-      const room = await RoomChat.findById(roomChatId);
-      //Tạo object tăng unread
-      const incObj = {};
-      room.users.forEach((u) => {
-        const uid = u.user_id.toString();
-        if (uid !== user._id.toString()) {
-          incObj[`unreadCount.${uid}`] = 1;
-        }
-      });
-      //Cập nhật room chat
-      const now = new Date();
-      const updatedRoom = await RoomChat.findByIdAndUpdate(
-        roomChatId,
-        {
-          lastMessage: {
+      const roomIds = Array.isArray(roomChatId) ? roomChatId : roomChatId;
+      for (const roomChatId of roomIds) {
+        if (
+          type === "emoji" ||
+          message?.trim() ||
+          (images && images.length > 0)
+        ) {
+          const chat = new Chat({
+            user_id: user._id,
+            room_chat_id: roomChatId,
             content: message,
             images: uploadsImages,
-            files: file ? file : [],
-            sender: user._id,
-            createdAt: now,
-          },
-          $inc: incObj,
-          $set: { [`unreadCount.${user._id.toString()}`]: 0 },
-        },
-        { new: true },
-      );
-
-      //trả data về client
-      const unreadCountForUsers = {};
-      updatedRoom.users.forEach((u) => {
-        const uid = u.user_id.toString();
-        unreadCountForUsers[uid] = updatedRoom.unreadCount?.[uid] || 0;
-      });
-
-      const payload = {
-        roomChatId,
-        user_id: user._id,
-        content: message,
-        avatar: user.avatar,
-        images: uploadsImages,
-        files: file,
-        createdAt: now,
-        unreadCountForUsers,
-      };
-
-      io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
-      room.users.forEach((u) => {
-        const sockets = onlineUser.get(u.user_id.toString());
-        if (sockets) {
-          sockets.forEach((sid) => {
-            io.to(sid).emit("SERVER_RETURN_SIDEBAR", payload);
+            type: type,
           });
+          await chat.save();
         }
-      });
+
+        //Lấy room
+        const room = await RoomChat.findById(roomChatId);
+        //Tạo object tăng unread
+        const incObj = {};
+        room.users.forEach((u) => {
+          const uid = u.user_id.toString();
+          if (uid !== user._id.toString()) {
+            incObj[`unreadCount.${uid}`] = 1;
+          }
+        });
+        //Cập nhật room chat
+        const now = new Date();
+
+        const updatedRoom = await RoomChat.findByIdAndUpdate(
+          roomChatId,
+          {
+            lastMessage: {
+              content: message,
+              images: uploadsImages,
+              files: file ? file : [],
+              sender: user._id,
+              createdAt: now,
+              type: type,
+            },
+            $inc: incObj,
+            $set: { [`unreadCount.${user._id.toString()}`]: 0 },
+          },
+          { new: true },
+        );
+
+        //trả data về client
+        const unreadCountForUsers = {};
+        updatedRoom.users.forEach((u) => {
+          const uid = u.user_id.toString();
+          unreadCountForUsers[uid] = updatedRoom.unreadCount?.[uid] || 0;
+        });
+
+        const payload = {
+          roomChatId,
+          user_id: user._id,
+          content: message,
+          avatar: user.avatar,
+          images: uploadsImages,
+          files: file,
+          type: type,
+          createdAt: now,
+          unreadCountForUsers,
+        };
+
+        io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
+        room.users.forEach((u) => {
+          const sockets = onlineUser.get(u.user_id.toString());
+          if (sockets) {
+            sockets.forEach((sid) => {
+              io.to(sid).emit("SERVER_RETURN_SIDEBAR", payload);
+            });
+          }
+        });
+      }
     });
     //remove message
     socket.on(
       "CLIENT_REMOVE_MESSAGE",
       async ({ selectedMessageId, roomChatId }) => {
         try {
+          console.log(selectedMessageId);
           const message = await Chat.findById(selectedMessageId);
           if (!message) return;
 
@@ -639,7 +652,10 @@ io.on("connection", async (socket) => {
         io.to(member.user_id.toString()).emit("SERVER_RETURN_NEW_ROOM", room);
       });
     });
-
+    //qr code
+    socket.on("JOIN_QR", (sessionId) => {
+      socket.join(sessionId);
+    });
     //disconnect
     socket.on("disconnect", async () => {
       const sockets = onlineUser.get(userId);
@@ -664,8 +680,14 @@ io.on("connection", async (socket) => {
     socket.disconnect(true);
   }
 });
-
+const getIO = () => {
+  if (!io) {
+    throw new Error("Socket chưa được khởi tạo");
+  }
+  return io;
+};
 module.exports = {
   app,
   server,
+  getIO
 };
