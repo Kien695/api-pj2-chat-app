@@ -30,8 +30,16 @@ const onlineUser = new Map();
 
 io.on("connection", async (socket) => {
   try {
+    //qr code
+    socket.on("JOIN_QR", (sessionId) => {
+      console.log("Socket đã nhận", sessionId);
+      socket.join(sessionId);
+    });
     const token = socket.handshake.auth.token;
-    if (!token) throw new Error("No token");
+   if (!token) {
+      console.log("PC chưa login kết nối Socket thành công (đang chờ quét QR)");
+      return; 
+    };
 
     const user = await getUserDetail(token);
     if (!user) throw new Error("Invalid token");
@@ -652,10 +660,7 @@ io.on("connection", async (socket) => {
         io.to(member.user_id.toString()).emit("SERVER_RETURN_NEW_ROOM", room);
       });
     });
-    //qr code
-    socket.on("JOIN_QR", (sessionId) => {
-      socket.join(sessionId);
-    });
+
     //disconnect
     socket.on("disconnect", async () => {
       const sockets = onlineUser.get(userId);
@@ -689,5 +694,5 @@ const getIO = () => {
 module.exports = {
   app,
   server,
-  getIO
+  getIO,
 };

@@ -56,7 +56,7 @@ module.exports.createQr = async (req, res) => {
 module.exports.scanQR = async (req, res) => {
   try {
     const sessionId = req.body.sessionId;
-
+    console.log(sessionId);
     const data = await redis.get("qr:" + sessionId);
 
     if (!data) {
@@ -70,7 +70,7 @@ module.exports.scanQR = async (req, res) => {
     qr.status = "approved";
 
     qr.userId = res.locals.userId;
-
+    console.log(res.locals.userId);
     await redis.set("qr:" + sessionId, JSON.stringify(qr), {
       EX: 15,
     });
@@ -119,10 +119,11 @@ module.exports.confirm = async (req, res) => {
     res.cookie("refreshToken", refreshToken, cookiesOption);
     //tạo my document nếu chưa có
 
-    const document = await myDocument(user._id);
+    const document = await myDocument(qr.userId);
     await redis.del("qr:" + sessionId);
 
-    res.json({
+    res.status(200).json({
+      success: true,
       message: "Login Success",
       data: { accessToken, documentId: document._id },
     });
