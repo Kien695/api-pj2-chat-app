@@ -21,5 +21,6 @@ router.get(
 //qr
 router.post("/qr/create", controller.createQr);
 router.post("/qr/scan", middleware.auth, controller.scanQR);
-router.post("/qr/confirm", controller.confirm);
+router.post("/qr/confirm", middleware.auth, controller.confirm);
+router.post("/qr/cancel", middleware.auth, controller.cancelQR);
 module.exports = router;

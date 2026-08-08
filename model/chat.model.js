@@ -35,7 +35,7 @@ const chatSchema = new mongoose.Schema(
     type: {
       type: String,
       enum: ["text", "image", "file", "emoji", "system", "invite"],
-      default: "message",
+      default: "text",
     },
 
     action: {

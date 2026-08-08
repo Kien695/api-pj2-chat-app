@@ -36,10 +36,10 @@ io.on("connection", async (socket) => {
       socket.join(sessionId);
     });
     const token = socket.handshake.auth.token;
-   if (!token) {
+    if (!token) {
       console.log("PC chưa login kết nối Socket thành công (đang chờ quét QR)");
-      return; 
-    };
+      return;
+    }
 
     const user = await getUserDetail(token);
     if (!user) throw new Error("Invalid token");
@@ -100,25 +100,22 @@ io.on("connection", async (socket) => {
           }),
         );
       }
-      const roomIds = Array.isArray(roomChatId) ? roomChatId : roomChatId;
+      const roomIds = Array.isArray(roomChatId) ? roomChatId : [roomChatId];
       for (const roomChatId of roomIds) {
-        if (
-          type === "emoji" ||
-          message?.trim() ||
-          (images && images.length > 0)
-        ) {
-          const chat = new Chat({
+        if (type === "emoji" || message?.trim() || uploadsImages.length > 0) {
+          await Chat.create({
             user_id: user._id,
             room_chat_id: roomChatId,
             content: message,
             images: uploadsImages,
-            type: type,
+
+            type,
           });
-          await chat.save();
         }
 
         //Lấy room
         const room = await RoomChat.findById(roomChatId);
+        if (!room) continue;
         //Tạo object tăng unread
         const incObj = {};
         room.users.forEach((u) => {
@@ -165,7 +162,7 @@ io.on("connection", async (socket) => {
           createdAt: now,
           unreadCountForUsers,
         };
-
+        console.log(payload);
         io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
         room.users.forEach((u) => {
           const sockets = onlineUser.get(u.user_id.toString());
@@ -182,7 +179,6 @@ io.on("connection", async (socket) => {
       "CLIENT_REMOVE_MESSAGE",
       async ({ selectedMessageId, roomChatId }) => {
         try {
-          console.log(selectedMessageId);
           const message = await Chat.findById(selectedMessageId);
           if (!message) return;
 

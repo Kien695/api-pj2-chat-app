@@ -31,6 +31,7 @@ module.exports.index = async (req, res) => {
         path: "content_user",
         select: "name avatar ",
       });
+
     // 2️ Lấy room chat
     const room = await RoomChat.findById(objectRoomChatId)
       .select("title typeRoom avatar users inviteToken")
@@ -115,7 +116,7 @@ module.exports.create = async (req, res) => {
       room_chat_id: roomChatId,
       files: files,
     });
-
+  
     await chat.save();
 
     return res.status(200).json({

@@ -27,23 +27,24 @@ module.exports.login = async (req, res) => {
 module.exports.createQr = async (req, res) => {
   try {
     const sessionId = crypto.randomUUID();
+    const deviceInfo = req.body.deviceInfo || req.headers["user-agent"] || "Máy tính (Web)";
 
     await redis.set(
       "qr:" + sessionId,
       JSON.stringify({
         status: "waiting",
-
+        deviceInfo: deviceInfo,
         userId: null,
       }),
       {
-        EX: process.env.QR_EXPIRE_TIME,
+        EX: Number(process.env.QR_EXPIRE_TIME) || 60,
       },
     );
 
     res.json({
       success: true,
       error: false,
-      data: { sessionId, expiresIn: process.env.QR_EXPIRE_TIME },
+      data: { sessionId, expiresIn: Number(process.env.QR_EXPIRE_TIME) || 60 },
     });
   } catch (error) {
     return res.status(500).json({
@@ -53,34 +54,45 @@ module.exports.createQr = async (req, res) => {
     });
   }
 };
+
 module.exports.scanQR = async (req, res) => {
   try {
     const sessionId = req.body.sessionId;
-    console.log(sessionId);
+    console.log("Scanned QR SessionId:", sessionId);
     const data = await redis.get("qr:" + sessionId);
 
     if (!data) {
       return res.status(404).json({
-        message: "QR hết hạn",
+        message: "Mã QR đã hết hạn hoặc không tồn tại",
+        success: false,
+        error: true,
       });
     }
 
     const qr = JSON.parse(data);
 
-    qr.status = "approved";
-
+    qr.status = "scanned";
     qr.userId = res.locals.userId;
-    console.log(res.locals.userId);
+    console.log("Scanned by User:", res.locals.userId);
+
     await redis.set("qr:" + sessionId, JSON.stringify(qr), {
-      EX: 15,
+      EX: 60,
     });
+
     const io = getIO();
-    io.to(sessionId).emit("QR_APPROVED");
+    io.to(sessionId).emit("QR_SCANNED", {
+      userId: res.locals.userId,
+      deviceInfo: qr.deviceInfo,
+    });
 
     res.status(200).json({
-      message: "Quét thành công!",
+      message: "Quét thành công! Vui lòng xác nhận trên điện thoại.",
       error: false,
       success: true,
+      data: {
+        sessionId,
+        deviceInfo: qr.deviceInfo || "Máy tính (Web)",
+      },
     });
   } catch (error) {
     return res.status(500).json({
@@ -90,6 +102,7 @@ module.exports.scanQR = async (req, res) => {
     });
   }
 };
+
 module.exports.confirm = async (req, res) => {
   try {
     const sessionId = req.body.sessionId;
@@ -97,16 +110,24 @@ module.exports.confirm = async (req, res) => {
     const data = await redis.get("qr:" + sessionId);
 
     if (!data) {
-      return res.status(404).json();
+      return res.status(404).json({
+        message: "Phiên đăng nhập QR đã hết hạn",
+        success: false,
+        error: true,
+      });
     }
 
     const qr = JSON.parse(data);
 
-    if (qr.status != "approved") {
+    if (qr.status !== "scanned" && qr.status !== "approved") {
       return res.status(400).json({
-        message: "Chưa quét",
+        message: "Mã QR chưa được quét",
+        success: false,
+        error: true,
       });
     }
+
+    qr.status = "approved";
 
     const accessToken = await generateAccessToken(qr.userId);
     const refreshToken = await generateRefreshToken(qr.userId);
@@ -117,14 +138,19 @@ module.exports.confirm = async (req, res) => {
     };
 
     res.cookie("refreshToken", refreshToken, cookiesOption);
-    //tạo my document nếu chưa có
 
     const document = await myDocument(qr.userId);
     await redis.del("qr:" + sessionId);
 
+    const io = getIO();
+    io.to(sessionId).emit("QR_APPROVED", {
+      accessToken,
+      documentId: document._id,
+    });
+
     res.status(200).json({
       success: true,
-      message: "Login Success",
+      message: "Đăng nhập thành công trên máy tính!",
       data: { accessToken, documentId: document._id },
     });
   } catch (error) {
@@ -135,3 +161,25 @@ module.exports.confirm = async (req, res) => {
     });
   }
 };
+
+module.exports.cancelQR = async (req, res) => {
+  try {
+    const sessionId = req.body.sessionId;
+    if (sessionId) {
+      await redis.del("qr:" + sessionId);
+      const io = getIO();
+      io.to(sessionId).emit("QR_REJECTED");
+    }
+    return res.status(200).json({
+      success: true,
+      message: "Đã hủy thao tác đăng nhập",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || error,
+      error: true,
+      success: false,
+    });
+  }
+};
+
