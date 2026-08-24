@@ -36,6 +36,49 @@ const generateResetTicket = () => crypto.randomBytes(32).toString("base64url");
 const hashResetTicket = (ticket) =>
   crypto.createHash("sha256").update(ticket).digest("hex");
 
+const verifyOtpChallenge = async (redis, email, submittedOtpHash) => {
+  const result = await redis.eval(
+    `
+      local value = redis.call('GET', KEYS[1])
+      if not value then
+        return { 'missing' }
+      end
+
+      local challenge = cjson.decode(value)
+      if challenge.otpHash ~= ARGV[1] then
+        challenge.attempts = (challenge.attempts or 0) + 1
+        if challenge.attempts >= tonumber(ARGV[2]) then
+          redis.call('DEL', KEYS[1])
+          return { 'locked' }
+        end
+
+        local ttl = redis.call('TTL', KEYS[1])
+        redis.call('SET', KEYS[1], cjson.encode(challenge), 'EX', ttl)
+        return { 'invalid', tostring(challenge.attempts) }
+      end
+
+      redis.call('DEL', KEYS[1])
+      return { 'verified', challenge.userId }
+    `,
+    {
+      keys: [getOtpKey(email)],
+      arguments: [submittedOtpHash, String(PASSWORD_RESET_MAX_ATTEMPTS)],
+    },
+  );
+
+  return {
+    status: result[0],
+    attempts:
+      result[0] === "invalid" && result[1] ? Number(result[1]) : undefined,
+    userId: result[0] === "verified" ? result[1] : undefined,
+  };
+};
+
+const consumeResetTicket = async (redis, ticket) => {
+  const value = await redis.getDel(getTicketKey(ticket));
+  return value ? JSON.parse(value) : null;
+};
+
 module.exports = {
   PASSWORD_RESET_TTL_SECONDS,
   PASSWORD_RESET_COOLDOWN_SECONDS,
@@ -48,4 +91,6 @@ module.exports = {
   hashOtp,
   generateResetTicket,
   hashResetTicket,
+  verifyOtpChallenge,
+  consumeResetTicket,
 };

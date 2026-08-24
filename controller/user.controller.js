@@ -13,6 +13,23 @@ const searchHelper = require("../helper/search");
 const Chat = require("../model/chat.model");
 const { myDocument } = require("../helper/createMyDocument");
 const {
+  PASSWORD_RESET_TTL_SECONDS,
+  PASSWORD_RESET_COOLDOWN_SECONDS,
+  normalizeEmail,
+  getOtpKey,
+  getCooldownKey,
+  getTicketKey,
+  generateOtp,
+  hashOtp,
+  generateResetTicket,
+  verifyOtpChallenge,
+  consumeResetTicket,
+} = require("../utils/passwordReset");
+const {
+  getEmailFingerprint,
+  writePasswordResetAudit,
+} = require("../utils/passwordResetAudit");
+const {
   generateRegistrationOptions,
   verifyRegistrationResponse,
   generateAuthenticationOptions,
@@ -264,37 +281,68 @@ module.exports.logout = async (req, res) => {
 //forgot-password
 module.exports.forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
-    const user = await User.findOne({ email: email });
-    if (!user) {
-      return res.status(400).json({
-        message: "Tài khoản không tồn tại",
-        error: true,
-        success: false,
-      });
-    }
-    const verifyCode = Math.floor(100000 + Math.random() * 900000);
-    await User.findByIdAndUpdate(
-      user._id,
-      {
-        otp: verifyCode,
-        otp_expiry: 600000 + Date.now(),
-      },
-      { new: true },
-    );
-    const subject = "Mã OTP xác minh";
-    const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${verifyCode}</b>. Thời hạn sử dụng là: ${Math.ceil(
-      600000 / 60000,
-    )} phút`;
-    const verifyEmail = await sendMail(email, subject, html);
-    return res.json({
-      message: "Kiểm tra email của bạn",
+    const email = normalizeEmail(req.body.email);
+    const emailFingerprint = getEmailFingerprint(email);
+    const genericResponse = {
+      message:
+        "Nếu tài khoản tồn tại, mã xác minh đặt lại mật khẩu đã được gửi",
       error: false,
       success: true,
+    };
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      writePasswordResetAudit(req, "otp_requested", {
+        outcome: "accepted",
+        emailFingerprint,
+      });
+      return res.status(200).json(genericResponse);
+    }
+
+    const cooldownCreated = await redis.set(getCooldownKey(email), "1", {
+      EX: PASSWORD_RESET_COOLDOWN_SECONDS,
+      NX: true,
     });
+
+    if (!cooldownCreated) {
+      writePasswordResetAudit(req, "otp_requested", {
+        outcome: "rate_limited",
+        userId: user._id.toString(),
+        emailFingerprint,
+      });
+      return res.status(200).json(genericResponse);
+    }
+
+    const verifyCode = generateOtp();
+    await redis.set(
+      getOtpKey(email),
+      JSON.stringify({
+        otpHash: hashOtp(email, verifyCode),
+        userId: user._id.toString(),
+        attempts: 0,
+      }),
+      { EX: PASSWORD_RESET_TTL_SECONDS },
+    );
+
+    const subject = "Mã OTP xác minh";
+    const html = `Mã OTP để xác quy Email của bạn là: <b style="color:green">${verifyCode}</b>. Thời hạn sử dụng là: ${Math.ceil(
+      PASSWORD_RESET_TTL_SECONDS / 60,
+    )} phút`;
+    sendMail(email, subject, html);
+
+    writePasswordResetAudit(req, "otp_issued", {
+      outcome: "success",
+      userId: user._id.toString(),
+      emailFingerprint,
+    });
+
+    return res.status(200).json(genericResponse);
   } catch (error) {
+    writePasswordResetAudit(req, "otp_requested", {
+      outcome: "error",
+    });
     return res.status(500).json({
-      message: error.message || error,
+      message: "Không thể xử lý yêu cầu đặt lại mật khẩu",
       error: true,
       success: false,
     });
@@ -303,41 +351,79 @@ module.exports.forgotPassword = async (req, res) => {
 //verify forgot-password
 module.exports.verifyForgotPassword = async (req, res) => {
   try {
-    const { email, otp } = req.body;
-    const user = await User.findOne({ email: email });
-    if (!user) {
+    const email = normalizeEmail(req.body.email);
+    const emailFingerprint = getEmailFingerprint(email);
+    const verification = await verifyOtpChallenge(
+      redis,
+      email,
+      hashOtp(email, req.body.otp),
+    );
+
+    if (verification.status === "missing") {
+      writePasswordResetAudit(req, "otp_verified", {
+        outcome: "expired_or_missing",
+        emailFingerprint,
+      });
       return res.status(400).json({
         error: true,
         success: false,
-        message: "Email không chính xác!",
+        message: "Mã OTP không hợp lệ hoặc đã hết hạn",
       });
     }
-    if (user.otp_expiry > Date.now() && user.otp == otp) {
-      user.otp = null;
-      user.otp_expiry = null;
-      await user.save();
-      return res.status(200).json({
-        error: false,
-        success: true,
-        message: "Xác minh OTP thành công",
+
+    if (verification.status === "locked") {
+      writePasswordResetAudit(req, "otp_verified", {
+        outcome: "locked",
+        emailFingerprint,
+      });
+      return res.status(429).json({
+        error: true,
+        success: false,
+        message: "Đã thử sai OTP quá nhiều lần. Vui lòng yêu cầu mã mới",
       });
     }
-    if (user.otp !== otp) {
+
+    if (verification.status === "invalid") {
+      writePasswordResetAudit(req, "otp_verified", {
+        outcome: "invalid",
+        emailFingerprint,
+        attempts: verification.attempts,
+      });
       return res.status(400).json({
         error: true,
         success: false,
         message: "Mã OTP không chính xác",
       });
-    } else {
-      return res.status(400).json({
-        error: true,
-        success: false,
-        message: "Mã OTP đã hết hạn",
-      });
     }
+
+    const resetTicket = generateResetTicket();
+    await redis.set(
+      getTicketKey(resetTicket),
+      JSON.stringify({ userId: verification.userId }),
+      { EX: PASSWORD_RESET_TTL_SECONDS },
+    );
+
+    writePasswordResetAudit(req, "otp_verified", {
+      outcome: "success",
+      userId: verification.userId,
+      emailFingerprint,
+    });
+
+    return res.status(200).json({
+      error: false,
+      success: true,
+      message: "Xác minh OTP thành công",
+      data: {
+        resetTicket,
+        expiresIn: PASSWORD_RESET_TTL_SECONDS,
+      },
+    });
   } catch (error) {
+    writePasswordResetAudit(req, "otp_verified", {
+      outcome: "error",
+    });
     return res.status(500).json({
-      message: error.message || error,
+      message: "Không thể xác minh OTP",
       error: true,
       success: false,
     });
@@ -345,35 +431,67 @@ module.exports.verifyForgotPassword = async (req, res) => {
 };
 //reset-password
 module.exports.resetPassword = async (req, res) => {
+  let ticketData;
   try {
-    const { email, newPassword, confirmPassword } = req.body;
-    const user = await User.findOne({ email: email });
+    const { resetTicket, newPassword } = req.body;
+    ticketData = await consumeResetTicket(redis, resetTicket);
+
+    if (!ticketData?.userId) {
+      writePasswordResetAudit(req, "password_reset", {
+        outcome: "invalid_or_expired_ticket",
+      });
+      return res.status(400).json({
+        error: true,
+        success: false,
+        message: "Phiên đặt lại mật khẩu không hợp lệ hoặc đã hết hạn",
+      });
+    }
+
+    const user = await User.findById(ticketData.userId);
     if (!user) {
-      return res.status(400).json({
+      writePasswordResetAudit(req, "password_reset", {
+        outcome: "user_missing",
+        userId: ticketData.userId,
+      });
+      return res.status(404).json({
         error: true,
         success: false,
-        message: "Email không chính xác!",
+        message: "Không thể đặt lại mật khẩu",
       });
     }
-    if (newPassword !== confirmPassword) {
-      return res.status(400).json({
-        error: true,
-        success: false,
-        message: "Mật khẩu không trùng khớp!",
-      });
-    }
+
     const salt = await bcryptjs.genSalt(10);
     const hashPassword = await bcryptjs.hash(newPassword, salt);
     user.password = hashPassword;
+    user.refresh_token = "";
+    user.access_token = "";
     await user.save();
+
+    const cookiesOption = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+    };
+    res.clearCookie("refreshToken", cookiesOption);
+
+    writePasswordResetAudit(req, "password_reset", {
+      outcome: "success",
+      userId: user._id.toString(),
+      sessionsRevoked: true,
+    });
+
     return res.status(200).json({
       error: false,
       success: true,
       message: "Đổi mật khẩu thành công!",
     });
   } catch (error) {
+    writePasswordResetAudit(req, "password_reset", {
+      outcome: "error",
+      userId: ticketData?.userId,
+    });
     return res.status(500).json({
-      message: error.message || error,
+      message: "Không thể đặt lại mật khẩu",
       error: true,
       success: false,
     });
@@ -401,6 +519,16 @@ module.exports.refreshToken = async (req, res) => {
       });
     }
     const userId = verifyToken?.id;
+    const user = await User.findById(userId).select("refresh_token");
+
+    if (!user || !user.refresh_token || user.refresh_token !== refreshToken) {
+      return res.status(401).json({
+        error: true,
+        success: false,
+        message: "Phiên đăng nhập đã bị thu hồi",
+      });
+    }
+
     const newAccessToken = await generateAccessToken(userId);
     return res.status(200).json({
       error: false,

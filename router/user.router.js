@@ -16,10 +16,14 @@ router.post(
 router.post("/verify", validate.verifyEmail, controller.verifyEmail);
 router.post("/login", validate.authLogin, controller.login);
 router.post("/logout", middleware.auth, controller.logout);
-router.post("/forgot-password", controller.forgotPassword);
+router.post(
+  "/forgot-password",
+  validate.authForgotPassword,
+  controller.forgotPassword,
+);
 router.post(
   "/verifyForgot",
-  validate.verifyEmail,
+  validate.verifyForgotPassword,
   controller.verifyForgotPassword,
 );
 router.post(
