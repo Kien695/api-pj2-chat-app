@@ -25,6 +25,8 @@ const io = new Server(server, {
 
 // socket running at localhost:3000
 
+const activeCalls = new Map();
+
 //online user
 const onlineUser = new Map();
 
@@ -657,6 +659,67 @@ io.on("connection", async (socket) => {
       });
     });
 
+    // Handle outgoing call request
+    socket.on("callToUser", (data) => {
+      const calleeSockets = onlineUser.get(data.callToUserId);
+
+      if (!calleeSockets?.size) {
+        socket.emit("userUnavailable", {
+          message: "Người dùng hiện chưa đang truy cập!.",
+        }); //  Notify caller if user is offline
+        return;
+      }
+
+      const calleeId = [...calleeSockets][0];
+
+      //  If the user is already in another call
+      if (activeCalls.has(data.callToUserId)) {
+        socket.emit("userBusy", {
+          message: "Người dùng đang trong cuộc gọi khác!",
+        });
+
+        io.to(calleeId).emit("incomingCallWhileBusy", {
+          from: data.from,
+          name: data.name,
+          email: data.email,
+          profilepic: data.profilepic,
+        });
+
+        return;
+      }
+
+      //  Emit an event to the receiver's socket (callee)
+      io.to(calleeId).emit("makeUser", {
+        signal: data.signalData, // WebRTC signal data
+        from: data.from, // Caller ID
+        name: data.name, // Caller name
+        email: data.email, // Caller email
+        profilepic: data.profilepic, // Caller profile picture
+        type: data.type,
+      });
+    });
+    //  Handle when a call is accepted
+    socket.on("answeredCall", (data) => {
+      const sockets = onlineUser.get(data.to);
+
+      if (!sockets?.size) return;
+      const socketId = [...sockets][0];
+      io.to(socketId).emit("callAccepted", {
+        signal: data.signal, // WebRTC signal
+        from: data.from, // Caller ID
+      });
+
+      //  Track active calls in a Map
+      activeCalls.set(data.from, { with: data.to, socketId: socket.id });
+      activeCalls.set(data.to, { with: data.from, socketId: socketId });
+    });
+    // Handle call rejection
+    socket.on("reject-call", (data) => {
+      io.to(data.to).emit("callRejected", {
+        name: data.name,
+        profilepic: data.profilepic,
+      });
+    });
     //disconnect
     socket.on("disconnect", async () => {
       const sockets = onlineUser.get(userId);

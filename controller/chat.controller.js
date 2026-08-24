@@ -37,9 +37,9 @@ module.exports.index = async (req, res) => {
       .select("title typeRoom avatar users inviteToken")
       .populate({
         path: "users.user_id",
-        select: "name avatar date_of_birth gender mobile lastActive ",
+        select: "name email avatar date_of_birth gender mobile lastActive ",
       });
-
+   
     if (!room) {
       return res.status(404).json({
         success: false,
@@ -116,7 +116,7 @@ module.exports.create = async (req, res) => {
       room_chat_id: roomChatId,
       files: files,
     });
-  
+
     await chat.save();
 
     return res.status(200).json({
