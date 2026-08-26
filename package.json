@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "test": "node --test test/passwordReset.test.js"
+    "test": "node --test test/passwordReset.test.js test/roomAuthorization.test.js test/roomSecurityRegression.test.js"
   },
   "author": "",
   "license": "ISC",

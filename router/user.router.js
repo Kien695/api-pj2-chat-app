@@ -4,6 +4,7 @@ const router = express.Router();
 const controller = require("../controller/user.controller");
 const validate = require("../validate/auth.validate");
 const middleware = require("../middleware/auth.middleware");
+const middlewareChat = require("../middleware/chat.middleware");
 const uploadCloud = require("../middleware/uploadCloud.middleware");
 const upload = multer();
 router.post("/register", validate.authRegister, controller.register);
@@ -66,18 +67,35 @@ router.post("/createRoom", middleware.auth, controller.createRoomChat);
 router.get("/getRoom", middleware.auth, controller.getRoomChat);
 router.patch(
   "/editRoom/:id",
+  middleware.auth,
+  middlewareChat.isGroupAdmin,
   upload.single("image"),
   uploadCloud.uploadOne,
-  middleware.auth,
   controller.editRoomChat,
 );
 router.get("/getAllRoomChat", middleware.auth, controller.getAllRoomChat);
-router.patch("/addMember/:id", middleware.auth, controller.addMember);
-router.patch("/removeMember/:id", middleware.auth, controller.removeMember);
-router.patch("/leaveGroup/:id", middleware.auth, controller.leaveGroup);
+router.patch(
+  "/addMember/:id",
+  middleware.auth,
+  middlewareChat.isGroupAdmin,
+  controller.addMember,
+);
+router.patch(
+  "/removeMember/:id",
+  middleware.auth,
+  middlewareChat.isGroupAdmin,
+  controller.removeMember,
+);
+router.patch(
+  "/leaveGroup/:id",
+  middleware.auth,
+  middlewareChat.isAccess,
+  controller.leaveGroup,
+);
 router.delete(
   "/removeRoom/:roomChatId",
   middleware.auth,
+  middlewareChat.isGroupAdmin,
   controller.removeRoom,
 );
 module.exports = router;

@@ -5,6 +5,12 @@ const RoomChat = require("../model/room-chat.model");
 const { Server } = require("socket.io");
 const http = require("http");
 const { getUserDetail } = require("../helper/getUserFormToken");
+const {
+  RoomAuthorizationError,
+  requireMessageOwner,
+  requireRoomMember,
+  requireRoomMembers,
+} = require("../service/roomAuthorization.service");
 const cloudinary = require("cloudinary").v2;
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
@@ -30,6 +36,29 @@ const activeCalls = new Map();
 //online user
 const onlineUser = new Map();
 
+const returnRoomSocketError = (socket, event, error, acknowledgement) => {
+  const isAuthorizationError = error instanceof RoomAuthorizationError;
+  const payload = {
+    success: false,
+    error: true,
+    event,
+    code: isAuthorizationError ? error.code : "ROOM_OPERATION_FAILED",
+    message: isAuthorizationError
+      ? error.message
+      : "Không thể thực hiện thao tác phòng chat",
+  };
+
+  if (!isAuthorizationError) {
+    console.error(`Socket room operation failed: ${event}`, error);
+  }
+
+  if (typeof acknowledgement === "function") {
+    acknowledgement(payload);
+  } else {
+    socket.emit("SERVER_ROOM_ERROR", payload);
+  }
+};
+
 io.on("connection", async (socket) => {
   try {
     //qr code
@@ -50,13 +79,23 @@ io.on("connection", async (socket) => {
 
     socket.join(userId);
     // Nhận room ID và join room
-    socket.on("JOIN_ROOM", ({ roomChatId }) => {
-      // leave room cũ nếu có
-      if (socket.roomChatId) {
-        socket.leave(socket.roomChatId);
+    socket.on("JOIN_ROOM", async ({ roomChatId } = {}, acknowledgement) => {
+      try {
+        await requireRoomMember(roomChatId, userId);
+
+        // Chỉ leave room cũ sau khi room mới đã được xác thực.
+        if (socket.roomChatId && socket.roomChatId !== roomChatId) {
+          await socket.leave(socket.roomChatId);
+        }
+        await socket.join(roomChatId);
+        socket.roomChatId = roomChatId;
+
+        if (typeof acknowledgement === "function") {
+          acknowledgement({ success: true, roomChatId });
+        }
+      } catch (error) {
+        returnRoomSocketError(socket, "JOIN_ROOM", error, acknowledgement);
       }
-      socket.join(roomChatId);
-      socket.roomChatId = roomChatId;
     });
     //user online
 
@@ -87,128 +126,190 @@ io.on("connection", async (socket) => {
 
     console.log("connected user", userId, socket.id);
     //message
-    socket.on("CLIENT_SEND_MESSAGE", async (content) => {
-      const { message, images, roomChatId, file, type } = content;
+    socket.on("CLIENT_SEND_MESSAGE", async (content = {}, acknowledgement) => {
+      try {
+        const { message, images, roomChatId, file, type } = content;
 
-      let uploadsImages = [];
+        const requestedRoomIds = Array.isArray(roomChatId)
+          ? roomChatId
+          : [roomChatId];
+        const roomIds = [...new Set(requestedRoomIds)];
 
-      if (images && images.length > 0) {
-        uploadsImages = await Promise.all(
-          images.map(async (base64) => {
-            const result = await cloudinary.uploader.upload(base64, {
-              folder: "chat_app",
+        if (roomIds.length === 0 || roomIds.length > 100) {
+          throw new RoomAuthorizationError(
+            400,
+            "INVALID_ROOM_ID",
+            "Danh sách phòng chat không hợp lệ",
+          );
+        }
+
+        // Xác thực toàn bộ target trước upload để tránh ghi một phần hoặc tốn phí.
+        const roomsById = await requireRoomMembers(roomIds, userId);
+
+        let uploadsImages = [];
+
+        if (images && images.length > 0) {
+          uploadsImages = await Promise.all(
+            images.map(async (base64) => {
+              const result = await cloudinary.uploader.upload(base64, {
+                folder: "chat_app",
+              });
+              return { url: result.secure_url, public_id: result.public_id };
+            }),
+          );
+        }
+        for (const authorizedRoomId of roomIds) {
+          const room = roomsById.get(authorizedRoomId);
+          //Tạo object tăng unread
+          const incObj = {};
+          room.users.forEach((u) => {
+            const uid = u.user_id.toString();
+            if (uid !== user._id.toString()) {
+              incObj[`unreadCount.${uid}`] = 1;
+            }
+          });
+          //Cập nhật room chat với membership trong cùng điều kiện query.
+          const now = new Date();
+
+          const updatedRoom = await RoomChat.findOneAndUpdate(
+            { _id: authorizedRoomId, "users.user_id": userId },
+            {
+              lastMessage: {
+                content: message,
+                images: uploadsImages,
+                files: file ? file : [],
+                sender: user._id,
+                createdAt: now,
+                type: type,
+              },
+              $inc: incObj,
+              $set: { [`unreadCount.${user._id.toString()}`]: 0 },
+            },
+            { new: true },
+          );
+
+          if (!updatedRoom) {
+            throw new RoomAuthorizationError(
+              403,
+              "ROOM_ACCESS_DENIED",
+              "Bạn không còn quyền truy cập phòng chat này",
+            );
+          }
+
+          if (
+            type === "emoji" ||
+            message?.trim() ||
+            uploadsImages.length > 0
+          ) {
+            await Chat.create({
+              user_id: user._id,
+              room_chat_id: authorizedRoomId,
+              content: message,
+              images: uploadsImages,
+              type,
             });
-            return { url: result.secure_url, public_id: result.public_id };
-          }),
-        );
-      }
-      const roomIds = Array.isArray(roomChatId) ? roomChatId : [roomChatId];
-      for (const roomChatId of roomIds) {
-        if (type === "emoji" || message?.trim() || uploadsImages.length > 0) {
-          await Chat.create({
-            user_id: user._id,
-            room_chat_id: roomChatId,
-            content: message,
-            images: uploadsImages,
+          }
 
-            type,
+          //trả data về client
+          const unreadCountForUsers = {};
+          updatedRoom.users.forEach((u) => {
+            const uid = u.user_id.toString();
+            unreadCountForUsers[uid] = updatedRoom.unreadCount?.[uid] || 0;
+          });
+
+          const payload = {
+            roomChatId: authorizedRoomId,
+            user_id: user._id,
+            content: message,
+            avatar: user.avatar,
+            images: uploadsImages,
+            files: file,
+            type: type,
+            createdAt: now,
+            unreadCountForUsers,
+          };
+          console.log(payload);
+          io.to(authorizedRoomId).emit("SERVER_RETURN_MASSAGE", payload);
+          room.users.forEach((u) => {
+            const sockets = onlineUser.get(u.user_id.toString());
+            if (sockets) {
+              sockets.forEach((sid) => {
+                io.to(sid).emit("SERVER_RETURN_SIDEBAR", payload);
+              });
+            }
           });
         }
 
-        //Lấy room
-        const room = await RoomChat.findById(roomChatId);
-        if (!room) continue;
-        //Tạo object tăng unread
-        const incObj = {};
-        room.users.forEach((u) => {
-          const uid = u.user_id.toString();
-          if (uid !== user._id.toString()) {
-            incObj[`unreadCount.${uid}`] = 1;
-          }
-        });
-        //Cập nhật room chat
-        const now = new Date();
-
-        const updatedRoom = await RoomChat.findByIdAndUpdate(
-          roomChatId,
-          {
-            lastMessage: {
-              content: message,
-              images: uploadsImages,
-              files: file ? file : [],
-              sender: user._id,
-              createdAt: now,
-              type: type,
-            },
-            $inc: incObj,
-            $set: { [`unreadCount.${user._id.toString()}`]: 0 },
-          },
-          { new: true },
+        if (typeof acknowledgement === "function") {
+          acknowledgement({ success: true });
+        }
+      } catch (error) {
+        returnRoomSocketError(
+          socket,
+          "CLIENT_SEND_MESSAGE",
+          error,
+          acknowledgement,
         );
-
-        //trả data về client
-        const unreadCountForUsers = {};
-        updatedRoom.users.forEach((u) => {
-          const uid = u.user_id.toString();
-          unreadCountForUsers[uid] = updatedRoom.unreadCount?.[uid] || 0;
-        });
-
-        const payload = {
-          roomChatId,
-          user_id: user._id,
-          content: message,
-          avatar: user.avatar,
-          images: uploadsImages,
-          files: file,
-          type: type,
-          createdAt: now,
-          unreadCountForUsers,
-        };
-        console.log(payload);
-        io.to(roomChatId).emit("SERVER_RETURN_MASSAGE", payload);
-        room.users.forEach((u) => {
-          const sockets = onlineUser.get(u.user_id.toString());
-          if (sockets) {
-            sockets.forEach((sid) => {
-              io.to(sid).emit("SERVER_RETURN_SIDEBAR", payload);
-            });
-          }
-        });
       }
     });
     //remove message
     socket.on(
       "CLIENT_REMOVE_MESSAGE",
-      async ({ selectedMessageId, roomChatId }) => {
+      async ({ selectedMessageId, roomChatId } = {}, acknowledgement) => {
         try {
-          const message = await Chat.findById(selectedMessageId);
-          if (!message) return;
+          const message = await requireMessageOwner(
+            selectedMessageId,
+            roomChatId,
+            userId,
+          );
 
-          const isMe = message.user_id.toString() === userId;
-
-          if (!isMe) return;
-
-          await Chat.findByIdAndUpdate(selectedMessageId, {
-            deleted: true,
-            deletedAt: new Date(),
-          });
+          await Chat.findOneAndUpdate(
+            {
+              _id: message._id,
+              room_chat_id: roomChatId,
+              user_id: userId,
+            },
+            {
+              deleted: true,
+              deletedAt: new Date(),
+            },
+          );
 
           io.to(roomChatId).emit("SERVER_MESSAGE_DELETED", selectedMessageId);
-        } catch (err) {
-          console.error(err);
+
+          if (typeof acknowledgement === "function") {
+            acknowledgement({ success: true });
+          }
+        } catch (error) {
+          returnRoomSocketError(
+            socket,
+            "CLIENT_REMOVE_MESSAGE",
+            error,
+            acknowledgement,
+          );
         }
       },
     );
 
     //typing
-    socket.on("CLIENT_SEND_TYPING", async (type) => {
-      if (!socket.roomChatId) return;
+    socket.on("CLIENT_SEND_TYPING", async (type, acknowledgement) => {
+      try {
+        if (!socket.roomChatId) return;
+        await requireRoomMember(socket.roomChatId, userId);
 
-      socket.broadcast.to(socket.roomChatId).emit("SERVER_RETURN_TYPING", {
-        user_id: user._id,
-        type: type,
-        avatar: user.avatar,
-      });
+        socket.broadcast.to(socket.roomChatId).emit("SERVER_RETURN_TYPING", {
+          user_id: user._id,
+          type: type,
+          avatar: user.avatar,
+        });
+      } catch (error) {
+        returnRoomSocketError(
+          socket,
+          "CLIENT_SEND_TYPING",
+          error,
+          acknowledgement,
+        );
+      }
     });
 
     //add friend
@@ -469,196 +570,46 @@ io.on("connection", async (socket) => {
       });
     });
     //client seen meessage in sibar
-    socket.on("CLIENT_READ_ROOM", async ({ roomChatId }) => {
-      if (!roomChatId) return;
+    socket.on(
+      "CLIENT_READ_ROOM",
+      async ({ roomChatId } = {}, acknowledgement) => {
+        try {
+          await requireRoomMember(roomChatId, userId);
 
-      await RoomChat.findByIdAndUpdate(roomChatId, {
-        $set: {
-          [`unreadCount.${userId}`]: 0,
-        },
-      });
+          const updatedRoom = await RoomChat.findOneAndUpdate(
+            { _id: roomChatId, "users.user_id": userId },
+            {
+              $set: {
+                [`unreadCount.${userId}`]: 0,
+              },
+            },
+          );
+          if (!updatedRoom) {
+            throw new RoomAuthorizationError(
+              403,
+              "ROOM_ACCESS_DENIED",
+              "Bạn không còn quyền truy cập phòng chat này",
+            );
+          }
 
-      io.to(roomChatId).emit("SERVER_READ_ROOM", {
-        roomChatId,
-        userId,
-      });
-    });
-    //client update room info
-    socket.on("CLIENT_UPDATE_ROOM_INFO", async (data) => {
-      const { roomChatId, title, avatar } = data;
+          io.to(roomChatId).emit("SERVER_READ_ROOM", {
+            roomChatId,
+            userId,
+          });
 
-      if (!roomChatId) return;
-      const systemMsg = await Chat.create({
-        room_chat_id: roomChatId,
-        user_id: user._id,
-        type: "system",
-        action: "rename_group",
-        content: title,
-      });
-      const populatedMsg = await Chat.findById(systemMsg._id).populate(
-        "user_id",
-        "name",
-      );
-      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
-      io.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
-        title,
-        avatar,
-      });
-    });
-    //client add member
-    socket.on("CLIENT_ADD_MEMBER", async (data) => {
-      const { roomChatId, member } = data;
-      if (!roomChatId) return;
-
-      // Lấy info user mới thêm
-      const newUsers = await User.find(
-        { _id: { $in: member } },
-        "name avatar lastActive",
-      );
-
-      const systemMsg = await Chat.create({
-        room_chat_id: roomChatId,
-        user_id: user._id,
-        type: "system",
-        action: "add_member",
-        content_user: member,
-      });
-
-      const roomChat = await RoomChat.findById(roomChatId).populate(
-        "users.user_id",
-        "name avatar lastActive",
-      );
-
-      const populatedMsg = await Chat.findById(systemMsg._id)
-        .populate("user_id", "name")
-        .populate("content_user", "name");
-
-      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
-
-      io.to(roomChatId).emit("SERVER_ROOM_UPDATED_USER", {
-        users: newUsers.map((u) => ({
-          user_id: u,
-          role: "member",
-        })),
-      });
-      // 2. Update sibar cho user mới được thêm
-      for (const userId of member) {
-        io.to(userId.toString()).emit("SERVER_ROOM_UPDATED_SIDEBAR", {
-          roomChat,
-        });
-      }
-    });
-    //client remove member
-    socket.on("CLIENT_REMOVE_MEMBER", async (data) => {
-      const { roomChatId, member } = data;
-
-      if (!roomChatId) return;
-      const systemMsg = await Chat.create({
-        room_chat_id: roomChatId,
-        user_id: user._id,
-        type: "system",
-        action: "remove_member",
-        content_user: member,
-      });
-      const roomChat = await RoomChat.findById(roomChatId)
-        .select("title typeRoom avatar users")
-        .populate({
-          path: "users.user_id",
-          select: "name avatar lastActive ",
-        });
-
-      const populatedMsg = await Chat.findById(systemMsg._id)
-        .populate("user_id", "name")
-        .populate("content_user", "name");
-      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
-      io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
-        roomChatId,
-        users: roomChat.users,
-        removedUserId: member,
-        action: "remove",
-      });
-    });
-    //client leave group in roomChat
-    socket.on("CLIENT_LEAVE_GROUP", async (data) => {
-      const { roomChatId } = data;
-
-      if (!roomChatId) return;
-      const systemMsg = await Chat.create({
-        room_chat_id: roomChatId,
-        user_id: user._id,
-        type: "system",
-        action: "leave_group",
-        content_user: user._id,
-      });
-      const roomChat = await RoomChat.findById(roomChatId)
-        .select("title typeRoom avatar users")
-        .populate({
-          path: "users.user_id",
-          select: "name avatar lastActive ",
-        });
-
-      const populatedMsg = await Chat.findById(systemMsg._id)
-        .populate("user_id", "name")
-        .populate("content_user", "name");
-      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
-      io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
-        roomChatId,
-        users: roomChat.users,
-        removedUserId: user._id,
-        action: "leave",
-      });
-    });
-    //client leave group-trả về danh sách group hiện tại
-    socket.on("CLIENT_LEAVE_ROOM_PERSON", async ({ roomChatId }) => {
-      socket.leave(roomChatId);
-      // gửi cho người rời
-      socket.emit("SERVER_LEAVE_ROOM_PERSON", {
-        roomChatId,
-      });
-      const systemMsg = await Chat.create({
-        room_chat_id: roomChatId,
-        user_id: user._id,
-        type: "system",
-        action: "leave_group",
-        content_user: user._id,
-      });
-      const roomChat = await RoomChat.findById(roomChatId)
-        .select("title typeRoom avatar users")
-        .populate({
-          path: "users.user_id",
-          select: "name avatar lastActive ",
-        });
-      // gửi cho người còn lại
-      const populatedMsg = await Chat.findById(systemMsg._id)
-        .populate("user_id", "name")
-        .populate("content_user", "name");
-      socket.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
-      io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
-        roomChatId,
-        users: roomChat.users,
-        removedUserId: userId,
-        action: "leave",
-      });
-
-      socket.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
-        roomChatId,
-        userId,
-      });
-    });
-
-    //client remove roomChat
-    socket.on("CLIENT_REMOVE_ROOM", async (data) => {
-      const { roomChatId } = data;
-
-      io.in(roomChatId).emit("SERVER_RETURN_ROOM", { roomChatId });
-    });
-    //client create room
-    socket.on("CLIENT_CREATE_ROOM", ({ room }) => {
-      room.users.forEach((member) => {
-        io.to(member.user_id.toString()).emit("SERVER_RETURN_NEW_ROOM", room);
-      });
-    });
-
+          if (typeof acknowledgement === "function") {
+            acknowledgement({ success: true });
+          }
+        } catch (error) {
+          returnRoomSocketError(
+            socket,
+            "CLIENT_READ_ROOM",
+            error,
+            acknowledgement,
+          );
+        }
+      },
+    );
     // Handle outgoing call request
     socket.on("callToUser", (data) => {
       const calleeSockets = onlineUser.get(data.callToUserId);

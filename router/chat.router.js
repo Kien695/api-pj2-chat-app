@@ -10,6 +10,7 @@ const cloudinary = require("../middleware/uploadCloud.middleware");
 router.get("/:roomChatId", middlewareChat.isAccess, controller.index);
 router.post(
   "/:roomChatId",
+  middlewareChat.isAccess,
   upload.array("files"),
   cloudinary.uploadFile,
   controller.create,

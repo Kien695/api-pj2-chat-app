@@ -1,25 +1,23 @@
-const RoomChat = require("../model/room-chat.model");
+const {
+  requireGroupAdmin,
+  requireRoomMember,
+  sendRoomAuthorizationError,
+} = require("../service/roomAuthorization.service");
 
-module.exports.isAccess = async (req, res, next) => {
+const getRoomId = (req) => req.params.roomChatId || req.params.id;
+
+const authorize = (policy) => async (req, res, next) => {
   try {
-    const roomChatId = req.params.roomChatId;
+    const roomChatId = getRoomId(req);
     const userId = res.locals.userId;
 
-    const exitRoomChat = await RoomChat.findOne({
-      _id: roomChatId,
-      "users.user_id": userId,
-    });
-
-    if (exitRoomChat) {
-      next();
-    } else {
-      return res.status(400).json({
-        error: true,
-        success: false,
-        link: "/chat",
-      });
-    }
+    const access = await policy(roomChatId, userId);
+    res.locals.roomChat = access.room;
+    res.locals.roomMember = access.member;
+    next();
   } catch (error) {
+    if (sendRoomAuthorizationError(res, error)) return;
+
     return res.status(500).json({
       error: true,
       success: false,
@@ -27,3 +25,6 @@ module.exports.isAccess = async (req, res, next) => {
     });
   }
 };
+
+module.exports.isAccess = authorize(requireRoomMember);
+module.exports.isGroupAdmin = authorize(requireGroupAdmin);

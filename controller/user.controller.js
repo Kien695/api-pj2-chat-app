@@ -12,6 +12,7 @@ const { generateRefreshToken } = require("../utils/generateRefreshToken");
 const searchHelper = require("../helper/search");
 const Chat = require("../model/chat.model");
 const { myDocument } = require("../helper/createMyDocument");
+const { getIO } = require("../socket");
 const {
   PASSWORD_RESET_TTL_SECONDS,
   PASSWORD_RESET_COOLDOWN_SECONDS,
@@ -1029,20 +1030,65 @@ module.exports.createRoomChat = async (req, res) => {
   try {
     const userId = res.locals.userId;
     const { title, members } = req.body;
+
+    if (
+      !Array.isArray(members) ||
+      members.length === 0 ||
+      members.length > 100 ||
+      members.some(
+        (memberId) =>
+          typeof memberId !== "string" ||
+          !mongoose.Types.ObjectId.isValid(memberId),
+      ) ||
+      (title !== undefined &&
+        (typeof title !== "string" || title.trim().length > 100))
+    ) {
+      return res.status(400).json({
+        error: true,
+        success: false,
+        message: "Thông tin phòng chat không hợp lệ",
+      });
+    }
+
+    const uniqueMemberIds = [
+      ...new Set(
+        members.filter(
+          (memberId) => memberId.toString() !== userId.toString(),
+        ),
+      ),
+    ];
+    const existingUsers = await User.find({
+      _id: { $in: uniqueMemberIds },
+    }).select("_id");
+
+    if (existingUsers.length !== uniqueMemberIds.length) {
+      return res.status(400).json({
+        error: true,
+        success: false,
+        message: "Danh sách thành viên không hợp lệ",
+      });
+    }
+
     const inviteToken = randomUUID();
     const dataRoom = {
-      title: title || "",
+      title: title?.trim() || "",
       typeRoom: "group",
       inviteToken: inviteToken,
       users: [],
     };
-    for (const userId of members) {
-      dataRoom.users.push({ user_id: userId, role: "member" });
+    for (const memberId of uniqueMemberIds) {
+      dataRoom.users.push({ user_id: memberId, role: "member" });
     }
     dataRoom.users.push({ user_id: userId, role: "admin" });
 
     const roomChat = new RoomChat(dataRoom);
     await roomChat.save();
+
+    const io = getIO();
+    roomChat.users.forEach((member) => {
+      io.to(member.user_id.toString()).emit("SERVER_RETURN_NEW_ROOM", roomChat);
+    });
+
     return res.status(200).json({
       message: "Phòng chat được tạo thành công",
       error: false,
@@ -1112,15 +1158,20 @@ module.exports.editRoomChat = async (req, res) => {
   try {
     const roomChatId = req.params.id;
     const { title } = req.body;
-    const roomChat = await RoomChat.findById(roomChatId);
-    if (!roomChat) {
-      return res.status(404).json({
+    const roomChat = res.locals.roomChat;
+
+    if (
+      title !== undefined &&
+      (typeof title !== "string" || title.trim().length > 100)
+    ) {
+      return res.status(400).json({
         success: false,
-        message: "Không tìm thấy phòng chat",
+        error: true,
+        message: "Tên phòng chat không hợp lệ",
       });
     }
     const updatedData = {};
-    if (title) updatedData.title = title;
+    if (title?.trim()) updatedData.title = title.trim();
     if (req.body.image && req.body.image_id) {
       // Xoá ảnh cũ trên Cloudinary nếu có
       if (roomChat.avatar_public_id) {
@@ -1134,6 +1185,25 @@ module.exports.editRoomChat = async (req, res) => {
       { $set: updatedData },
       { new: true },
     ).select("title avatar");
+
+    const systemMsg = await Chat.create({
+      room_chat_id: roomChatId,
+      user_id: res.locals.userId,
+      type: "system",
+      action: "rename_group",
+      content: roomChatUpdated.title,
+    });
+    const populatedMsg = await Chat.findById(systemMsg._id).populate(
+      "user_id",
+      "name",
+    );
+    const io = getIO();
+    io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+    io.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
+      title: roomChatUpdated.title,
+      avatar: roomChatUpdated.avatar,
+    });
+
     return res.status(200).json({
       success: true,
       error: false,
@@ -1188,22 +1258,44 @@ module.exports.addMember = async (req, res) => {
     const roomChatId = req.params.id;
     const members = req.body.members;
 
-    const room = await RoomChat.findById(roomChatId);
-    if (!room) {
-      return res.status(404).json({
+    if (
+      !Array.isArray(members) ||
+      members.length === 0 ||
+      members.length > 100 ||
+      members.some(
+        (memberId) =>
+          typeof memberId !== "string" ||
+          !mongoose.Types.ObjectId.isValid(memberId),
+      )
+    ) {
+      return res.status(400).json({
         error: true,
         success: false,
-        message: "Room không tồn tại",
+        message: "Danh sách thành viên không hợp lệ",
       });
     }
-    const existingIds = room.users.map((u) => u.user_id.toString());
 
-    const userObjects = members
+    const room = res.locals.roomChat;
+    const existingIds = room.users.map((u) => u.user_id.toString());
+    const newMemberIds = [...new Set(members)]
       .filter((id) => !existingIds.includes(id.toString()))
-      .map((id) => ({
-        user_id: id,
-        role: "member",
-      }));
+      .filter((id) => id.toString() !== res.locals.userId.toString());
+    const existingUsers = await User.find({
+      _id: { $in: newMemberIds },
+    }).select("_id");
+
+    if (existingUsers.length !== newMemberIds.length) {
+      return res.status(400).json({
+        error: true,
+        success: false,
+        message: "Danh sách thành viên không hợp lệ",
+      });
+    }
+
+    const userObjects = newMemberIds.map((id) => ({
+      user_id: id,
+      role: "member",
+    }));
 
     if (userObjects.length > 0) {
       await RoomChat.updateOne(
@@ -1212,6 +1304,39 @@ module.exports.addMember = async (req, res) => {
           $push: { users: { $each: userObjects } },
         },
       );
+
+      const newUsers = await User.find(
+        { _id: { $in: newMemberIds } },
+        "name avatar lastActive",
+      );
+      const updatedRoom = await RoomChat.findById(roomChatId).populate(
+        "users.user_id",
+        "name avatar lastActive",
+      );
+      const systemMsg = await Chat.create({
+        room_chat_id: roomChatId,
+        user_id: res.locals.userId,
+        type: "system",
+        action: "add_member",
+        content_user: newMemberIds,
+      });
+      const populatedMsg = await Chat.findById(systemMsg._id)
+        .populate("user_id", "name")
+        .populate("content_user", "name");
+      const io = getIO();
+
+      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+      io.to(roomChatId).emit("SERVER_ROOM_UPDATED_USER", {
+        users: newUsers.map((newUser) => ({
+          user_id: newUser,
+          role: "member",
+        })),
+      });
+      newMemberIds.forEach((newMemberId) => {
+        io.to(newMemberId.toString()).emit("SERVER_ROOM_UPDATED_SIDEBAR", {
+          roomChat: updatedRoom,
+        });
+      });
     }
 
     return res.status(200).json({
@@ -1278,6 +1403,36 @@ module.exports.removeMember = async (req, res) => {
       $pull: { users: { user_id: memberId } },
     });
 
+    const updatedRoom = await RoomChat.findById(roomChatId)
+      .select("title typeRoom avatar users")
+      .populate({
+        path: "users.user_id",
+        select: "name avatar lastActive",
+      });
+    const systemMsg = await Chat.create({
+      room_chat_id: roomChatId,
+      user_id: currentUserId,
+      type: "system",
+      action: "remove_member",
+      content_user: memberId,
+    });
+    const populatedMsg = await Chat.findById(systemMsg._id)
+      .populate("user_id", "name")
+      .populate("content_user", "name");
+    const io = getIO();
+
+    io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+    io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
+      roomChatId,
+      users: updatedRoom.users,
+      removedUserId: memberId,
+      action: "remove",
+    });
+    io.to(memberId.toString()).emit("SERVER_LEAVE_ROOM_PERSON", {
+      roomChatId,
+    });
+    io.in(memberId.toString()).socketsLeave(roomChatId);
+
     return res.status(200).json({
       success: true,
       message: "Xóa thành viên khỏi nhóm thành công",
@@ -1329,6 +1484,36 @@ module.exports.leaveGroup = async (req, res) => {
     await RoomChat.findByIdAndUpdate(roomChatId, {
       $pull: { users: { user_id: currentUserId } },
     });
+
+    const updatedRoom = await RoomChat.findById(roomChatId)
+      .select("title typeRoom avatar users")
+      .populate({
+        path: "users.user_id",
+        select: "name avatar lastActive",
+      });
+    const systemMsg = await Chat.create({
+      room_chat_id: roomChatId,
+      user_id: currentUserId,
+      type: "system",
+      action: "leave_group",
+      content_user: currentUserId,
+    });
+    const populatedMsg = await Chat.findById(systemMsg._id)
+      .populate("user_id", "name")
+      .populate("content_user", "name");
+    const io = getIO();
+
+    io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+    io.to(roomChatId).emit("SERVER_ROOM_REMOVE_USERS", {
+      roomChatId,
+      users: updatedRoom.users,
+      removedUserId: currentUserId,
+      action: "leave",
+    });
+    io.to(currentUserId.toString()).emit("SERVER_LEAVE_ROOM_PERSON", {
+      roomChatId,
+    });
+    io.in(currentUserId.toString()).socketsLeave(roomChatId);
 
     return res.status(200).json({
       success: true,
@@ -1386,6 +1571,14 @@ module.exports.removeRoom = async (req, res) => {
 
     // Xóa tất cả chat khỏi DB
     await Chat.deleteMany({ room_chat_id: roomChatId });
+
+    const io = getIO();
+    room.users.forEach((member) => {
+      io.to(member.user_id.toString()).emit("SERVER_RETURN_ROOM", {
+        roomChatId,
+      });
+    });
+    io.in(roomChatId).socketsLeave(roomChatId);
 
     return res
       .status(200)
