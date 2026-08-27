@@ -5,19 +5,28 @@ const RoomChat = require("../model/room-chat.model");
 const { Server } = require("socket.io");
 const http = require("http");
 const { getUserDetail } = require("../helper/getUserFormToken");
+const socketAsyncHandler = require("../utils/socketAsyncHandler");
+const {
+  acceptFriendRequest,
+  addFriendRequest,
+  cancelFriendRequest,
+  refuseFriendRequest,
+  unfriend,
+} = require("../service/friendship.service");
+const { persistMessage } = require("../service/messagePersistence.service");
+const {
+  cleanupAssets,
+  uploadImagesWithCompensation,
+} = require("../service/cloudinaryAsset.service");
+const {
+  validateMessagePayload,
+} = require("../service/messagePayloadValidation.service");
 const {
   RoomAuthorizationError,
   requireMessageOwner,
   requireRoomMember,
   requireRoomMembers,
 } = require("../service/roomAuthorization.service");
-const cloudinary = require("cloudinary").v2;
-cloudinary.config({
-  cloud_name: process.env.CLOUD_NAME,
-  api_key: process.env.CLOUD_KEY,
-  api_secret: process.env.CLOUD_SECRET,
-  secure: true,
-});
 const app = express();
 
 // socket connection
@@ -59,6 +68,37 @@ const returnRoomSocketError = (socket, event, error, acknowledgement) => {
   }
 };
 
+const returnSocketError = (socket, event, error, args = []) => {
+  const acknowledgement = args.at(-1);
+  const payload = {
+    success: false,
+    error: true,
+    event,
+    code: "SOCKET_OPERATION_FAILED",
+    message: "Không thể thực hiện thao tác realtime",
+  };
+
+  console.error(`Socket operation failed: ${event}`, error);
+
+  if (typeof acknowledgement === "function") {
+    acknowledgement(payload);
+  } else {
+    socket.emit("SERVER_SOCKET_ERROR", payload);
+  }
+};
+
+const registerAsyncSocketHandler = (socket, event, handler, onError) => {
+  socket.on(
+    event,
+    socketAsyncHandler(handler, (error, args) => {
+      if (onError) {
+        return onError(error, args);
+      }
+      return returnSocketError(socket, event, error, args);
+    }),
+  );
+};
+
 io.on("connection", async (socket) => {
   try {
     //qr code
@@ -79,7 +119,7 @@ io.on("connection", async (socket) => {
 
     socket.join(userId);
     // Nhận room ID và join room
-    socket.on("JOIN_ROOM", async ({ roomChatId } = {}, acknowledgement) => {
+    registerAsyncSocketHandler(socket, "JOIN_ROOM", async ({ roomChatId } = {}, acknowledgement) => {
       try {
         await requireRoomMember(roomChatId, userId);
 
@@ -126,9 +166,28 @@ io.on("connection", async (socket) => {
 
     console.log("connected user", userId, socket.id);
     //message
-    socket.on("CLIENT_SEND_MESSAGE", async (content = {}, acknowledgement) => {
+    registerAsyncSocketHandler(socket, "CLIENT_SEND_MESSAGE", async (content = {}, acknowledgement) => {
       try {
-        const { message, images, roomChatId, file, type } = content;
+        const { roomChatId, clientMessageId } = content;
+        const validatedMessage = validateMessagePayload(content);
+        const {
+          message,
+          images,
+          files: file,
+          type,
+        } = validatedMessage;
+
+        if (
+          typeof clientMessageId !== "string" ||
+          clientMessageId.trim().length === 0 ||
+          clientMessageId.length > 100
+        ) {
+          throw new RoomAuthorizationError(
+            400,
+            "INVALID_CLIENT_MESSAGE_ID",
+            "Mã tin nhắn không hợp lệ",
+          );
+        }
 
         const requestedRoomIds = Array.isArray(roomChatId)
           ? roomChatId
@@ -144,104 +203,100 @@ io.on("connection", async (socket) => {
         }
 
         // Xác thực toàn bộ target trước upload để tránh ghi một phần hoặc tốn phí.
-        const roomsById = await requireRoomMembers(roomIds, userId);
+        await requireRoomMembers(roomIds, userId);
 
         let uploadsImages = [];
 
         if (images && images.length > 0) {
-          uploadsImages = await Promise.all(
-            images.map(async (base64) => {
-              const result = await cloudinary.uploader.upload(base64, {
-                folder: "chat_app",
-              });
-              return { url: result.secure_url, public_id: result.public_id };
-            }),
-          );
+          uploadsImages = await uploadImagesWithCompensation(images);
         }
+        const results = [];
         for (const authorizedRoomId of roomIds) {
-          const room = roomsById.get(authorizedRoomId);
-          //Tạo object tăng unread
-          const incObj = {};
-          room.users.forEach((u) => {
-            const uid = u.user_id.toString();
-            if (uid !== user._id.toString()) {
-              incObj[`unreadCount.${uid}`] = 1;
-            }
-          });
-          //Cập nhật room chat với membership trong cùng điều kiện query.
-          const now = new Date();
-
-          const updatedRoom = await RoomChat.findOneAndUpdate(
-            { _id: authorizedRoomId, "users.user_id": userId },
-            {
-              lastMessage: {
-                content: message,
-                images: uploadsImages,
-                files: file ? file : [],
-                sender: user._id,
-                createdAt: now,
-                type: type,
-              },
-              $inc: incObj,
-              $set: { [`unreadCount.${user._id.toString()}`]: 0 },
-            },
-            { new: true },
-          );
-
-          if (!updatedRoom) {
-            throw new RoomAuthorizationError(
-              403,
-              "ROOM_ACCESS_DENIED",
-              "Bạn không còn quyền truy cập phòng chat này",
-            );
-          }
-
-          if (
-            type === "emoji" ||
-            message?.trim() ||
-            uploadsImages.length > 0
-          ) {
-            await Chat.create({
-              user_id: user._id,
-              room_chat_id: authorizedRoomId,
+          try {
+            const persisted = await persistMessage({
+              roomId: authorizedRoomId,
+              userId,
+              clientMessageId: clientMessageId.trim(),
               content: message,
               images: uploadsImages,
+              files: Array.isArray(file) ? file : [],
               type,
             });
-          }
+            const unreadCountForUsers = {};
+            persisted.room.users.forEach((member) => {
+              const memberId = member.user_id.toString();
+              unreadCountForUsers[memberId] =
+                persisted.room.unreadCount?.[memberId] || 0;
+            });
 
-          //trả data về client
-          const unreadCountForUsers = {};
-          updatedRoom.users.forEach((u) => {
-            const uid = u.user_id.toString();
-            unreadCountForUsers[uid] = updatedRoom.unreadCount?.[uid] || 0;
-          });
+            const payload = {
+              _id: persisted.message._id,
+              clientMessageId: persisted.message.clientMessageId,
+              roomChatId: authorizedRoomId,
+              user_id: user._id,
+              content: persisted.message.content,
+              avatar: user.avatar,
+              images: persisted.message.images,
+              files: persisted.message.files,
+              type: persisted.message.type,
+              createdAt: persisted.message.createdAt,
+              unreadCountForUsers,
+            };
 
-          const payload = {
-            roomChatId: authorizedRoomId,
-            user_id: user._id,
-            content: message,
-            avatar: user.avatar,
-            images: uploadsImages,
-            files: file,
-            type: type,
-            createdAt: now,
-            unreadCountForUsers,
-          };
-          console.log(payload);
-          io.to(authorizedRoomId).emit("SERVER_RETURN_MASSAGE", payload);
-          room.users.forEach((u) => {
-            const sockets = onlineUser.get(u.user_id.toString());
-            if (sockets) {
-              sockets.forEach((sid) => {
-                io.to(sid).emit("SERVER_RETURN_SIDEBAR", payload);
+            if (!persisted.duplicate) {
+              io.to(authorizedRoomId).emit("SERVER_RETURN_MASSAGE", payload);
+              persisted.room.users.forEach((member) => {
+                const sockets = onlineUser.get(member.user_id.toString());
+                sockets?.forEach((socketId) => {
+                  io.to(socketId).emit("SERVER_RETURN_SIDEBAR", payload);
+                });
               });
             }
-          });
+
+            results.push({
+              roomChatId: authorizedRoomId,
+              success: true,
+              messageId: persisted.message._id,
+              duplicate: persisted.duplicate,
+            });
+          } catch (error) {
+            console.error("Message persistence failed", {
+              roomChatId: authorizedRoomId,
+              userId,
+              clientMessageId,
+              error,
+            });
+            results.push({
+              roomChatId: authorizedRoomId,
+              success: false,
+              code: error.code || "MESSAGE_PERSISTENCE_FAILED",
+            });
+          }
         }
 
+        const response = {
+          success: results.every((result) => result.success),
+          clientMessageId: clientMessageId.trim(),
+          results,
+        };
+        const uploadedAssetsAreUnreferenced =
+          uploadsImages.length > 0 &&
+          !results.some((result) => result.success && !result.duplicate);
+        if (uploadedAssetsAreUnreferenced) {
+          await cleanupAssets(uploadsImages).catch((cleanupError) => {
+            console.error("Rejected message upload cleanup failed", cleanupError);
+          });
+        }
         if (typeof acknowledgement === "function") {
-          acknowledgement({ success: true });
+          acknowledgement(response);
+        } else if (!response.success) {
+          socket.emit("SERVER_ROOM_ERROR", {
+            ...response,
+            error: true,
+            event: "CLIENT_SEND_MESSAGE",
+            code: "MESSAGE_PERSISTENCE_FAILED",
+            message: "Không thể gửi tin nhắn đến một hoặc nhiều phòng",
+          });
         }
       } catch (error) {
         returnRoomSocketError(
@@ -253,7 +308,8 @@ io.on("connection", async (socket) => {
       }
     });
     //remove message
-    socket.on(
+    registerAsyncSocketHandler(
+      socket,
       "CLIENT_REMOVE_MESSAGE",
       async ({ selectedMessageId, roomChatId } = {}, acknowledgement) => {
         try {
@@ -292,7 +348,7 @@ io.on("connection", async (socket) => {
     );
 
     //typing
-    socket.on("CLIENT_SEND_TYPING", async (type, acknowledgement) => {
+    registerAsyncSocketHandler(socket, "CLIENT_SEND_TYPING", async (type, acknowledgement) => {
       try {
         if (!socket.roomChatId) return;
         await requireRoomMember(socket.roomChatId, userId);
@@ -313,41 +369,11 @@ io.on("connection", async (socket) => {
     });
 
     //add friend
-    socket.on("CLIENT_ADD_FRIEND", async (content) => {
+    registerAsyncSocketHandler(socket, "CLIENT_ADD_FRIEND", async (content) => {
       const { userId, text } = content;
 
       const myUserId = user._id;
-      //thêm id của A vào acceptFriend của B
-      const exitIdAinB = await User.findOne({
-        _id: userId,
-        "acceptFriends.id": myUserId,
-      });
-      if (!exitIdAinB) {
-        await User.updateOne(
-          {
-            _id: userId,
-          },
-          {
-            $push: { acceptFriends: { id: myUserId, message: text } },
-          },
-        );
-      }
-      const exitIdBinA = await User.findOne({
-        _id: myUserId,
-        "requestFriends.id": userId,
-      });
-      if (!exitIdBinA) {
-        await User.updateOne(
-          {
-            _id: myUserId,
-          },
-          {
-            $push: {
-              requestFriends: { id: userId, message: text },
-            },
-          },
-        );
-      }
+      await addFriendRequest(myUserId, userId, text);
 
       //trả về thông tin A trong danh sách lời mời kết bạn của B
       const infoUserA = await User.findOne({
@@ -366,38 +392,9 @@ io.on("connection", async (socket) => {
       });
     });
     //cancel add friend
-    socket.on("CLIENT_CANCEL_FRIEND", async (userId) => {
+    registerAsyncSocketHandler(socket, "CLIENT_CANCEL_FRIEND", async (userId) => {
       const myUserId = user._id;
-      //xóa id của A trong acceptFriend của B
-      const exitIdAinB = await User.findOne({
-        _id: userId,
-        "acceptFriends.id": myUserId,
-      });
-      if (exitIdAinB) {
-        await User.updateOne(
-          {
-            _id: userId,
-          },
-          {
-            $pull: { acceptFriends: { id: myUserId } },
-          },
-        );
-      }
-      //xóa id của B trong requestFriend của A
-      const exitIdBinA = await User.findOne({
-        _id: myUserId,
-        "requestFriends.id": userId,
-      });
-      if (exitIdBinA) {
-        await User.updateOne(
-          {
-            _id: myUserId,
-          },
-          {
-            $pull: { requestFriends: { id: userId } },
-          },
-        );
-      }
+      await cancelFriendRequest(myUserId, userId);
       //trả về số lời mời kết bạn bên B
       const infoUserB = await User.findOne({
         _id: userId,
@@ -420,39 +417,9 @@ io.on("connection", async (socket) => {
       });
     });
     //refuse add friend
-    socket.on("CLIENT_REFUSE_FRIEND", async (userId) => {
+    registerAsyncSocketHandler(socket, "CLIENT_REFUSE_FRIEND", async (userId) => {
       const myUserId = user._id;
-
-      //xóa id của A trong acceptFriend của B
-      const exitIdAinB = await User.findOne({
-        _id: myUserId,
-        "acceptFriends.id": userId,
-      });
-      if (exitIdAinB) {
-        await User.updateOne(
-          {
-            _id: myUserId,
-          },
-          {
-            $pull: { acceptFriends: { id: userId } },
-          },
-        );
-      }
-      //xóa id của B trong requestFriend của A
-      const exitIdBinA = await User.findOne({
-        _id: userId,
-        "requestFriends.id": myUserId,
-      });
-      if (exitIdBinA) {
-        await User.updateOne(
-          {
-            _id: userId,
-          },
-          {
-            $pull: { requestFriends: { id: myUserId } },
-          },
-        );
-      }
+      await refuseFriendRequest(myUserId, userId);
       //xóa thông tin A trong danh sách lời mời kết bạn bên B
       socket.emit("SERVER_DELETE_INFO_A", {
         userIdB: myUserId,
@@ -465,54 +432,9 @@ io.on("connection", async (socket) => {
       });
     });
     //accept add friend
-    socket.on("CLIENT_ACCEPT_FRIEND", async (userId) => {
+    registerAsyncSocketHandler(socket, "CLIENT_ACCEPT_FRIEND", async (userId) => {
       const myUserId = user._id;
-
-      const exitIdAinB = await User.exists({
-        _id: myUserId,
-        "acceptFriends.id": userId,
-      });
-      const exitIdBinA = await User.exists({
-        _id: userId,
-        "requestFriends.id": myUserId,
-      });
-
-      let roomChat;
-
-      if (exitIdAinB && exitIdBinA) {
-        const dataRoom = {
-          typeRoom: "friend",
-          users: [
-            { user_id: userId, role: "superAdmin" },
-            { user_id: myUserId, role: "superAdmin" },
-          ],
-        };
-        roomChat = await new RoomChat(dataRoom).save();
-      }
-
-      if (exitIdAinB && roomChat) {
-        await User.updateOne(
-          { _id: myUserId },
-          {
-            $pull: { acceptFriends: { id: userId } },
-            $addToSet: {
-              FriendList: { user_id: userId, room_chat_id: roomChat._id },
-            },
-          },
-        );
-      }
-
-      if (exitIdBinA && roomChat) {
-        await User.updateOne(
-          { _id: userId },
-          {
-            $pull: { requestFriends: { id: myUserId } },
-            $addToSet: {
-              FriendList: { user_id: myUserId, room_chat_id: roomChat._id },
-            },
-          },
-        );
-      }
+      await acceptFriendRequest(myUserId, userId);
       //xóa thông tin A trong danh sách lời mời kết bạn bên B
       socket.emit("SERVER_DELETE_INFO_A", {
         userIdB: myUserId,
@@ -536,28 +458,9 @@ io.on("connection", async (socket) => {
       });
     });
     //unfriend
-    socket.on("CLIENT_UNFRIEND", async (userId) => {
+    registerAsyncSocketHandler(socket, "CLIENT_UNFRIEND", async (userId) => {
       const myUserId = user._id;
-      //lấy room chat giữa 2 người
-      const myInfo = await User.findById(myUserId);
-      const friendInfo = myInfo.FriendList.find(
-        (item) => item.user_id === userId,
-      );
-      if (!friendInfo) return;
-      const roomChatId = friendInfo.room_chat_id;
-      //xóa bạn bè khỏi danh sách bạn bè của 2 người
-      await User.updateOne(
-        { _id: myUserId },
-        { $pull: { FriendList: { user_id: userId } } },
-      );
-      await User.updateOne(
-        { _id: userId },
-        { $pull: { FriendList: { user_id: myUserId } } },
-      );
-      //xóa room chat
-      await RoomChat.findByIdAndDelete(roomChatId);
-      //xóa tin nhắn trong room chat
-      await Chat.deleteMany({ room_chat_id: roomChatId });
+      const roomChatId = await unfriend(myUserId, userId);
       //  realtime cho 2 người
       io.to(myUserId.toString()).emit("SERVER_UNFRIEND_SUCCESS", {
         friendId: userId,
@@ -570,7 +473,8 @@ io.on("connection", async (socket) => {
       });
     });
     //client seen meessage in sibar
-    socket.on(
+    registerAsyncSocketHandler(
+      socket,
       "CLIENT_READ_ROOM",
       async ({ roomChatId } = {}, acknowledgement) => {
         try {
@@ -672,7 +576,7 @@ io.on("connection", async (socket) => {
       });
     });
     //disconnect
-    socket.on("disconnect", async () => {
+    registerAsyncSocketHandler(socket, "disconnect", async () => {
       const sockets = onlineUser.get(userId);
       if (!sockets) return;
       sockets.delete(socket.id);
@@ -689,6 +593,12 @@ io.on("connection", async (socket) => {
         });
       }
       console.log("disconnect user", socket.id);
+    }, (error) => {
+      console.error("Socket disconnect cleanup failed", {
+        socketId: socket.id,
+        userId,
+        error,
+      });
     });
   } catch (error) {
     console.log("Socket auth failed:", error.message);

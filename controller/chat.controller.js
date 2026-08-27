@@ -1,6 +1,12 @@
 const mongoose = require("mongoose");
 const Chat = require("../model/chat.model");
 const RoomChat = require("../model/room-chat.model");
+const {
+  requireRoomMember,
+  sendRoomAuthorizationError,
+} = require("../service/roomAuthorization.service");
+const { cleanupAssets } = require("../service/cloudinaryAsset.service");
+const MediaCleanupJob = require("../model/media-cleanup-job.model");
 //get chat
 module.exports.index = async (req, res) => {
   try {
@@ -111,19 +117,25 @@ module.exports.create = async (req, res) => {
     if (typeof files === "string") {
       files = JSON.parse(files);
     }
-    const chat = new Chat({
-      user_id: res.locals.userId,
-      room_chat_id: roomChatId,
-      files: files,
+    await requireRoomMember(roomChatId, res.locals.userId);
+    const cleanupJob = await MediaCleanupJob.create({
+      ownerId: res.locals.userId,
+      assets: req.uploadedCloudinaryAssets,
+      nextAttemptAt: new Date(Date.now() + 15 * 60 * 1000),
     });
-
-    await chat.save();
 
     return res.status(200).json({
       success: true,
-      data: chat.files,
+      data: files.map((file) => ({
+        ...file,
+        cleanup_job_id: cleanupJob._id.toString(),
+      })),
     });
   } catch (error) {
+    await cleanupAssets(req.uploadedCloudinaryAssets).catch((cleanupError) => {
+      console.error("Rejected chat upload cleanup failed", cleanupError);
+    });
+    if (sendRoomAuthorizationError(res, error)) return;
     return res.status(500).json({
       success: false,
       message: error.message,

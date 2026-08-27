@@ -6,6 +6,11 @@ const chatSchema = new mongoose.Schema(
       ref: "User",
     },
     room_chat_id: { type: mongoose.Schema.ObjectId, ref: "RoomChat" },
+    clientMessageId: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+    },
     content: String,
     // images: [{ url: { type: String }, public_id: { type: String } }],
     images: [
@@ -56,6 +61,14 @@ const chatSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+  },
+);
+chatSchema.index(
+  { user_id: 1, room_chat_id: 1, clientMessageId: 1 },
+  {
+    name: "user_id_1_room_chat_id_1_clientMessageId_1",
+    unique: true,
+    partialFilterExpression: { clientMessageId: { $type: "string" } },
   },
 );
 // if (mongoose.models.Chat) {

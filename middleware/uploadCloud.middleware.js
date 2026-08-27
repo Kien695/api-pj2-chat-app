@@ -30,6 +30,9 @@ module.exports.uploadOne = async (req, res, next) => {
 
     req.body.image = result.secure_url;
     req.body.image_id = result.public_id;
+    req.uploadedCloudinaryAssets = [
+      { public_id: result.public_id, resource_type: "image" },
+    ];
 
     next();
   } catch (error) {
@@ -41,9 +44,8 @@ module.exports.uploadOne = async (req, res, next) => {
 module.exports.uploadFile = async (req, res, next) => {
   if (!req.files || !req.files.length) return next();
 
+  const uploadedFiles = [];
   try {
-    const uploadedFiles = [];
-
     for (const file of req.files) {
       const result = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
@@ -66,12 +68,18 @@ module.exports.uploadFile = async (req, res, next) => {
         name: file.originalname,
         size: file.size,
         type: file.mimetype,
+        resource_type: "raw",
       });
     }
 
     req.body.files = uploadedFiles;
+    req.uploadedCloudinaryAssets = uploadedFiles;
     next();
   } catch (err) {
+    const { cleanupAssets } = require("../service/cloudinaryAsset.service");
+    await cleanupAssets(uploadedFiles).catch((cleanupError) => {
+      console.error("Partial file upload cleanup failed", cleanupError);
+    });
     return res.status(500).json({ message: "Upload file failed" });
   }
 };

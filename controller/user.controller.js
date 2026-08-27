@@ -14,6 +14,21 @@ const Chat = require("../model/chat.model");
 const { myDocument } = require("../helper/createMyDocument");
 const { getIO } = require("../socket");
 const {
+  addMembers: addRoomMembers,
+  leaveGroup: leaveRoomGroup,
+  removeMember: removeRoomMember,
+} = require("../service/roomMembershipMutation.service");
+const {
+  sendRoomAuthorizationError,
+} = require("../service/roomAuthorization.service");
+const { deleteRoom } = require("../service/roomDeletion.service");
+const { editRoom } = require("../service/roomEdit.service");
+const { cleanupAssets } = require("../service/cloudinaryAsset.service");
+const {
+  drainMediaCleanupJobs,
+  enqueueMediaCleanup,
+} = require("../service/mediaCleanupJob.service");
+const {
   PASSWORD_RESET_TTL_SECONDS,
   PASSWORD_RESET_COOLDOWN_SECONDS,
   normalizeEmail,
@@ -831,32 +846,47 @@ module.exports.userDetail = async (req, res) => {
 };
 //avatar user
 module.exports.userImage = async (req, res) => {
+  let imageCommitted = false;
   try {
     const userId = res.locals.userId;
     const type = req.body.type;
+    if (!["avatar", "background"].includes(type)) {
+      await cleanupAssets(req.uploadedCloudinaryAssets).catch(() => {});
+      return res.status(400).json({
+        error: true,
+        success: false,
+        message: "Loại ảnh không hợp lệ",
+      });
+    }
     const user = await User.findById(userId);
     if (!user) {
+      await cleanupAssets(req.uploadedCloudinaryAssets).catch(() => {});
       return res.status(400).json({
         error: true,
         success: false,
       });
     }
+    let previousPublicId;
     if (type == "avatar") {
-      if (user.avatar_public_id) {
-        cloudinary.uploader.destroy(user.avatar_public_id);
-      }
+      previousPublicId = user.avatar_public_id;
       user.avatar = req.body.image || user.avatar;
       user.avatar_public_id = req.body.image_id || user.avatar_public_id;
     }
     if (type == "background") {
-      if (user.background_public_id) {
-        cloudinary.uploader.destroy(user.background_public_id);
-      }
+      previousPublicId = user.background_public_id;
       user.background = req.body.image || user.background;
       user.background_public_id =
         req.body.image_id || user.background_public_id;
     }
     await user.save();
+    imageCommitted = Boolean(req.body.image);
+    if (req.body.image && previousPublicId) {
+      enqueueMediaCleanup([
+        { public_id: previousPublicId, resource_type: "image" },
+      ]).catch((cleanupError) => {
+        console.error("Previous profile image cleanup enqueue failed", cleanupError);
+      });
+    }
     return res.status(200).json({
       message: "Cập nhật thành công",
       error: false,
@@ -864,6 +894,13 @@ module.exports.userImage = async (req, res) => {
       data: user,
     });
   } catch (error) {
+    if (!imageCommitted) {
+      await cleanupAssets(req.uploadedCloudinaryAssets).catch(
+        (cleanupError) => {
+          console.error("Profile image compensation failed", cleanupError);
+        },
+      );
+    }
     return res.status(500).json({
       message: error.message || error,
       error: true,
@@ -1155,6 +1192,7 @@ module.exports.getAllRoomChat = async (req, res) => {
 };
 //edit room chat
 module.exports.editRoomChat = async (req, res) => {
+  let roomImageCommitted = false;
   try {
     const roomChatId = req.params.id;
     const { title } = req.body;
@@ -1164,6 +1202,7 @@ module.exports.editRoomChat = async (req, res) => {
       title !== undefined &&
       (typeof title !== "string" || title.trim().length > 100)
     ) {
+      await cleanupAssets(req.uploadedCloudinaryAssets).catch(() => {});
       return res.status(400).json({
         success: false,
         error: true,
@@ -1173,36 +1212,41 @@ module.exports.editRoomChat = async (req, res) => {
     const updatedData = {};
     if (title?.trim()) updatedData.title = title.trim();
     if (req.body.image && req.body.image_id) {
-      // Xoá ảnh cũ trên Cloudinary nếu có
-      if (roomChat.avatar_public_id) {
-        cloudinary.uploader.destroy(roomChat.avatar_public_id);
-      }
       updatedData.avatar = req.body.image;
       updatedData.avatar_public_id = req.body.image_id;
     }
-    const roomChatUpdated = await RoomChat.findByIdAndUpdate(
-      roomChatId,
-      { $set: updatedData },
-      { new: true },
-    ).select("title avatar");
+    const mutation = await editRoom({
+      roomId: roomChatId,
+      actorId: res.locals.userId,
+      updatedData,
+    });
+    const roomChatUpdated = mutation.room;
+    roomImageCommitted = Boolean(req.body.image);
 
-    const systemMsg = await Chat.create({
-      room_chat_id: roomChatId,
-      user_id: res.locals.userId,
-      type: "system",
-      action: "rename_group",
-      content: roomChatUpdated.title,
-    });
-    const populatedMsg = await Chat.findById(systemMsg._id).populate(
-      "user_id",
-      "name",
-    );
-    const io = getIO();
-    io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
-    io.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
-      title: roomChatUpdated.title,
-      avatar: roomChatUpdated.avatar,
-    });
+    if (req.body.image && roomChat.avatar_public_id) {
+      enqueueMediaCleanup([
+        { public_id: roomChat.avatar_public_id, resource_type: "image" },
+      ]).catch((cleanupError) => {
+        console.error("Previous room image cleanup enqueue failed", cleanupError);
+      });
+    }
+
+    try {
+      const populatedMsg = await Chat.findById(
+        mutation.systemMessage._id,
+      ).populate("user_id", "name");
+      const io = getIO();
+      io.to(roomChatId).emit("SERVER_NEW_MESSAGE", populatedMsg);
+      io.to(roomChatId).emit("SERVER_ROOM_UPDATED", {
+        title: roomChatUpdated.title,
+        avatar: roomChatUpdated.avatar,
+      });
+    } catch (notificationError) {
+      console.error("Room edit notification failed", {
+        roomChatId,
+        error: notificationError,
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -1210,6 +1254,14 @@ module.exports.editRoomChat = async (req, res) => {
       data: roomChatUpdated,
     });
   } catch (error) {
+    if (!roomImageCommitted) {
+      await cleanupAssets(req.uploadedCloudinaryAssets).catch(
+        (cleanupError) => {
+          console.error("Room image compensation failed", cleanupError);
+        },
+      );
+    }
+    if (sendRoomAuthorizationError(res, error)) return;
     return res.status(500).json({
       success: false,
       message: "Lỗi server",
@@ -1292,18 +1344,12 @@ module.exports.addMember = async (req, res) => {
       });
     }
 
-    const userObjects = newMemberIds.map((id) => ({
-      user_id: id,
-      role: "member",
-    }));
-
-    if (userObjects.length > 0) {
-      await RoomChat.updateOne(
-        { _id: roomChatId },
-        {
-          $push: { users: { $each: userObjects } },
-        },
-      );
+    if (newMemberIds.length > 0) {
+      const mutation = await addRoomMembers({
+        roomId: roomChatId,
+        actorId: res.locals.userId,
+        memberIds: newMemberIds,
+      });
 
       const newUsers = await User.find(
         { _id: { $in: newMemberIds } },
@@ -1313,14 +1359,7 @@ module.exports.addMember = async (req, res) => {
         "users.user_id",
         "name avatar lastActive",
       );
-      const systemMsg = await Chat.create({
-        room_chat_id: roomChatId,
-        user_id: res.locals.userId,
-        type: "system",
-        action: "add_member",
-        content_user: newMemberIds,
-      });
-      const populatedMsg = await Chat.findById(systemMsg._id)
+      const populatedMsg = await Chat.findById(mutation.systemMessage._id)
         .populate("user_id", "name")
         .populate("content_user", "name");
       const io = getIO();
@@ -1344,6 +1383,7 @@ module.exports.addMember = async (req, res) => {
       success: true,
     });
   } catch (error) {
+    if (sendRoomAuthorizationError(res, error)) return;
     return res.status(500).json({
       error: true,
       success: false,
@@ -1399,9 +1439,17 @@ module.exports.removeMember = async (req, res) => {
     }
 
     // 3️ Xóa member khỏi nhóm
-    await RoomChat.findByIdAndUpdate(roomChatId, {
-      $pull: { users: { user_id: memberId } },
-    });
+    let mutation;
+    try {
+      mutation = await removeRoomMember({
+        roomId: roomChatId,
+        actorId: currentUserId,
+        memberId,
+      });
+    } catch (error) {
+      if (sendRoomAuthorizationError(res, error)) return;
+      throw error;
+    }
 
     const updatedRoom = await RoomChat.findById(roomChatId)
       .select("title typeRoom avatar users")
@@ -1409,14 +1457,7 @@ module.exports.removeMember = async (req, res) => {
         path: "users.user_id",
         select: "name avatar lastActive",
       });
-    const systemMsg = await Chat.create({
-      room_chat_id: roomChatId,
-      user_id: currentUserId,
-      type: "system",
-      action: "remove_member",
-      content_user: memberId,
-    });
-    const populatedMsg = await Chat.findById(systemMsg._id)
+    const populatedMsg = await Chat.findById(mutation.systemMessage._id)
       .populate("user_id", "name")
       .populate("content_user", "name");
     const io = getIO();
@@ -1481,8 +1522,9 @@ module.exports.leaveGroup = async (req, res) => {
     }
 
     // 3️ Xóa member khỏi nhóm
-    await RoomChat.findByIdAndUpdate(roomChatId, {
-      $pull: { users: { user_id: currentUserId } },
+    const mutation = await leaveRoomGroup({
+      roomId: roomChatId,
+      userId: currentUserId,
     });
 
     const updatedRoom = await RoomChat.findById(roomChatId)
@@ -1491,14 +1533,7 @@ module.exports.leaveGroup = async (req, res) => {
         path: "users.user_id",
         select: "name avatar lastActive",
       });
-    const systemMsg = await Chat.create({
-      room_chat_id: roomChatId,
-      user_id: currentUserId,
-      type: "system",
-      action: "leave_group",
-      content_user: currentUserId,
-    });
-    const populatedMsg = await Chat.findById(systemMsg._id)
+    const populatedMsg = await Chat.findById(mutation.systemMessage._id)
       .populate("user_id", "name")
       .populate("content_user", "name");
     const io = getIO();
@@ -1521,6 +1556,7 @@ module.exports.leaveGroup = async (req, res) => {
       error: false,
     });
   } catch (error) {
+    if (sendRoomAuthorizationError(res, error)) return;
     return res.status(500).json({
       message: error.message || error,
       success: false,
@@ -1533,57 +1569,32 @@ module.exports.removeRoom = async (req, res) => {
   try {
     const roomChatId = req.params.roomChatId;
     const userId = res.locals.userId;
-
-    const room = await RoomChat.findById(roomChatId);
-    if (!room) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Phòng chat không tồn tại" });
-    }
-    const isAdmin = room.users.some(
-      (u) => u.user_id.toString() === userId.toString() && u.role === "admin",
-    );
-
-    if (!isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "Bạn không có quyền xóa phòng chat",
-      });
-    }
-    // Xóa phòng chat
-    await RoomChat.findByIdAndDelete(roomChatId);
-    // Lấy tất cả chat trong phòng
-    const chats = await Chat.find({ room_chat_id: roomChatId });
-
-    // Tạo mảng tất cả promise xóa ảnh + file của tất cả chat
-    const allDestroyPromises = chats.flatMap((item) => {
-      const imagePromises = item.images.map((image) =>
-        cloudinary.uploader.destroy(image.public_id),
-      );
-      const filePromises = item.files.map((file) =>
-        cloudinary.uploader.destroy(file.public_id),
-      );
-      return [...imagePromises, ...filePromises];
-    });
-
-    // Xóa tất cả cùng lúc
-    await Promise.all(allDestroyPromises);
-
-    // Xóa tất cả chat khỏi DB
-    await Chat.deleteMany({ room_chat_id: roomChatId });
+    const deletion = await deleteRoom(roomChatId, userId);
 
     const io = getIO();
-    room.users.forEach((member) => {
-      io.to(member.user_id.toString()).emit("SERVER_RETURN_ROOM", {
-        roomChatId,
+    try {
+      deletion.memberIds.forEach((memberId) => {
+        io.to(memberId).emit("SERVER_RETURN_ROOM", { roomChatId });
       });
-    });
-    io.in(roomChatId).socketsLeave(roomChatId);
+      io.in(roomChatId).socketsLeave(roomChatId);
+    } catch (notificationError) {
+      console.error("Room deletion notification failed", {
+        roomChatId,
+        error: notificationError,
+      });
+    }
+
+    if (deletion.hasCleanupJob) {
+      drainMediaCleanupJobs().catch((cleanupError) => {
+        console.error("Immediate media cleanup failed", cleanupError);
+      });
+    }
 
     return res
       .status(200)
       .json({ success: true, message: "Phòng chat này đã được xóa!" });
   } catch (error) {
+    if (sendRoomAuthorizationError(res, error)) return;
     return res.status(500).json({
       message: error.message || error,
       error: true,
