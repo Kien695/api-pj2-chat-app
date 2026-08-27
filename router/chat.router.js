@@ -1,17 +1,22 @@
 const express = require("express");
 const router = express.Router();
-const multer = require("multer");
-const upload = multer({
-  limits: { fileSize: 50 * 1024 * 1024 }, // 10MB
-});
+const {
+  chatFileUpload,
+} = require("../middleware/uploadLimits.middleware");
+const {
+  validateChatFileUploads,
+} = require("../middleware/validateUpload.middleware");
 const controller = require("../controller/chat.controller");
 const middlewareChat = require("../middleware/chat.middleware");
+const { restRateLimit } = require("../middleware/rateLimit.middleware");
 const cloudinary = require("../middleware/uploadCloud.middleware");
 router.get("/:roomChatId", middlewareChat.isAccess, controller.index);
 router.post(
   "/:roomChatId",
   middlewareChat.isAccess,
-  upload.array("files"),
+  restRateLimit("chatUpload"),
+  chatFileUpload,
+  validateChatFileUploads,
   cloudinary.uploadFile,
   controller.create,
 );

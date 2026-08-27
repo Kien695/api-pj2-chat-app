@@ -4,8 +4,22 @@ const Chat = require("../model/chat.model");
 const RoomChat = require("../model/room-chat.model");
 const { Server } = require("socket.io");
 const http = require("http");
-const { getUserDetail } = require("../helper/getUserFormToken");
+const { randomUUID } = require("crypto");
 const socketAsyncHandler = require("../utils/socketAsyncHandler");
+const {
+  socketAuthenticationMiddleware,
+} = require("../service/socketAuthentication.service");
+const {
+  QrSessionSecurityError,
+  authorizeQrSubscription,
+} = require("../service/qrSessionSecurity.service");
+const {
+  CallSignalingError,
+  requireCallPermission,
+  validateCallAction,
+  validateCallRequest,
+  validateCallResponse,
+} = require("../service/callSignalingSecurity.service");
 const {
   acceptFriendRequest,
   addFriendRequest,
@@ -27,6 +41,18 @@ const {
   requireRoomMember,
   requireRoomMembers,
 } = require("../service/roomAuthorization.service");
+const {
+  SocketRateLimitError,
+  enforceSocketRateLimit,
+} = require("../service/socketRateLimit.service");
+const {
+  SocketPayloadValidationError,
+  validateFriendRequestPayload,
+  validateFriendTarget,
+  validateMessageRemovalPayload,
+  validateRoomActionPayload,
+  validateTypingPayload,
+} = require("../service/socketPayloadValidation.service");
 const app = express();
 
 // socket connection
@@ -41,23 +67,73 @@ const io = new Server(server, {
 // socket running at localhost:3000
 
 const activeCalls = new Map();
+const pendingCalls = new Map();
 
 //online user
 const onlineUser = new Map();
 
+io.use(socketAuthenticationMiddleware);
+
+const removePendingCall = (callId) => {
+  const pendingCall = pendingCalls.get(callId);
+  if (pendingCall?.expiryTimer) clearTimeout(pendingCall.expiryTimer);
+  pendingCalls.delete(callId);
+  return pendingCall;
+};
+
+const hasPendingCall = (userId) =>
+  [...pendingCalls.values()].some(
+    (call) => call.callerId === userId || call.calleeId === userId,
+  );
+
+const returnCallSocketError = (socket, event, error, args) => {
+  const acknowledgement = args.at(-1);
+  const isCallError = error instanceof CallSignalingError;
+  const isRateLimitError = error instanceof SocketRateLimitError;
+  const response = {
+    success: false,
+    error: true,
+    event,
+    code: isRateLimitError
+      ? error.code
+      : isCallError
+        ? error.code
+        : "CALL_SIGNALING_FAILED",
+    message: isCallError ? error.message : "Không thể thực hiện thao tác cuộc gọi",
+  };
+  if (isRateLimitError) {
+    response.message = error.message;
+    response.retryAfterSeconds = error.retryAfterSeconds;
+  }
+  if (!isCallError && !isRateLimitError) console.error(`Call signaling failed: ${event}`, error);
+  if (typeof acknowledgement === "function") acknowledgement(response);
+  else socket.emit("SERVER_SOCKET_ERROR", response);
+};
+
 const returnRoomSocketError = (socket, event, error, acknowledgement) => {
   const isAuthorizationError = error instanceof RoomAuthorizationError;
+  const isRateLimitError = error instanceof SocketRateLimitError;
+  const isValidationError = error instanceof SocketPayloadValidationError;
   const payload = {
     success: false,
     error: true,
     event,
-    code: isAuthorizationError ? error.code : "ROOM_OPERATION_FAILED",
+    code: isRateLimitError || isValidationError
+      ? error.code
+      : isAuthorizationError
+        ? error.code
+        : "ROOM_OPERATION_FAILED",
     message: isAuthorizationError
       ? error.message
       : "Không thể thực hiện thao tác phòng chat",
   };
 
-  if (!isAuthorizationError) {
+  if (isRateLimitError) {
+    payload.message = error.message;
+    payload.retryAfterSeconds = error.retryAfterSeconds;
+  }
+  if (isValidationError) payload.message = error.message;
+  if (!isAuthorizationError && !isRateLimitError && !isValidationError) {
     console.error(`Socket room operation failed: ${event}`, error);
   }
 
@@ -70,15 +146,17 @@ const returnRoomSocketError = (socket, event, error, acknowledgement) => {
 
 const returnSocketError = (socket, event, error, args = []) => {
   const acknowledgement = args.at(-1);
+  const isValidationError = error instanceof SocketPayloadValidationError;
   const payload = {
     success: false,
     error: true,
     event,
-    code: "SOCKET_OPERATION_FAILED",
+    code: isValidationError ? error.code : "SOCKET_OPERATION_FAILED",
     message: "Không thể thực hiện thao tác realtime",
   };
 
-  console.error(`Socket operation failed: ${event}`, error);
+  if (isValidationError) payload.message = error.message;
+  else console.error(`Socket operation failed: ${event}`, error);
 
   if (typeof acknowledgement === "function") {
     acknowledgement(payload);
@@ -102,25 +180,48 @@ const registerAsyncSocketHandler = (socket, event, handler, onError) => {
 io.on("connection", async (socket) => {
   try {
     //qr code
-    socket.on("JOIN_QR", (sessionId) => {
-      console.log("Socket đã nhận", sessionId);
-      socket.join(sessionId);
-    });
-    const token = socket.handshake.auth.token;
-    if (!token) {
+    registerAsyncSocketHandler(
+      socket,
+      "JOIN_QR",
+      async (payload, acknowledgement) => {
+        const { sessionId, roomName } = await authorizeQrSubscription(payload);
+        if (socket.qrRoomName && socket.qrRoomName !== roomName) {
+          await socket.leave(socket.qrRoomName);
+        }
+        await socket.join(roomName);
+        socket.qrRoomName = roomName;
+        if (typeof acknowledgement === "function") {
+          acknowledgement({ success: true, sessionId });
+        }
+      },
+      (error, args) => {
+        const acknowledgement = args.at(-1);
+        const isQrError = error instanceof QrSessionSecurityError;
+        const response = {
+          success: false,
+          error: true,
+          event: "JOIN_QR",
+          code: isQrError ? error.code : "QR_SUBSCRIPTION_FAILED",
+          message: isQrError ? error.message : "Không thể theo dõi phiên QR",
+        };
+        if (!isQrError) console.error("QR subscription failed", error);
+        if (typeof acknowledgement === "function") acknowledgement(response);
+        else socket.emit("SERVER_SOCKET_ERROR", response);
+      },
+    );
+    const user = socket.data.authenticatedUser;
+    if (!user) {
       console.log("PC chưa login kết nối Socket thành công (đang chờ quét QR)");
       return;
     }
-
-    const user = await getUserDetail(token);
-    if (!user) throw new Error("Invalid token");
     const userId = user._id.toString();
     console.log("User connected:", userId);
 
     socket.join(userId);
     // Nhận room ID và join room
-    registerAsyncSocketHandler(socket, "JOIN_ROOM", async ({ roomChatId } = {}, acknowledgement) => {
+    registerAsyncSocketHandler(socket, "JOIN_ROOM", async (payload, acknowledgement) => {
       try {
+        const { roomChatId } = validateRoomActionPayload(payload);
         await requireRoomMember(roomChatId, userId);
 
         // Chỉ leave room cũ sau khi room mới đã được xác thực.
@@ -201,6 +302,8 @@ io.on("connection", async (socket) => {
             "Danh sách phòng chat không hợp lệ",
           );
         }
+
+        await enforceSocketRateLimit("message", userId, roomIds.length);
 
         // Xác thực toàn bộ target trước upload để tránh ghi một phần hoặc tốn phí.
         await requireRoomMembers(roomIds, userId);
@@ -311,8 +414,10 @@ io.on("connection", async (socket) => {
     registerAsyncSocketHandler(
       socket,
       "CLIENT_REMOVE_MESSAGE",
-      async ({ selectedMessageId, roomChatId } = {}, acknowledgement) => {
+      async (payload, acknowledgement) => {
         try {
+          const { selectedMessageId, roomChatId } =
+            validateMessageRemovalPayload(payload);
           const message = await requireMessageOwner(
             selectedMessageId,
             roomChatId,
@@ -351,6 +456,8 @@ io.on("connection", async (socket) => {
     registerAsyncSocketHandler(socket, "CLIENT_SEND_TYPING", async (type, acknowledgement) => {
       try {
         if (!socket.roomChatId) return;
+        type = validateTypingPayload(type);
+        await enforceSocketRateLimit("typing", userId);
         await requireRoomMember(socket.roomChatId, userId);
 
         socket.broadcast.to(socket.roomChatId).emit("SERVER_RETURN_TYPING", {
@@ -370,9 +477,8 @@ io.on("connection", async (socket) => {
 
     //add friend
     registerAsyncSocketHandler(socket, "CLIENT_ADD_FRIEND", async (content) => {
-      const { userId, text } = content;
-
       const myUserId = user._id;
+      const { userId, text } = validateFriendRequestPayload(content, myUserId);
       await addFriendRequest(myUserId, userId, text);
 
       //trả về thông tin A trong danh sách lời mời kết bạn của B
@@ -394,6 +500,7 @@ io.on("connection", async (socket) => {
     //cancel add friend
     registerAsyncSocketHandler(socket, "CLIENT_CANCEL_FRIEND", async (userId) => {
       const myUserId = user._id;
+      userId = validateFriendTarget(userId, myUserId);
       await cancelFriendRequest(myUserId, userId);
       //trả về số lời mời kết bạn bên B
       const infoUserB = await User.findOne({
@@ -419,6 +526,7 @@ io.on("connection", async (socket) => {
     //refuse add friend
     registerAsyncSocketHandler(socket, "CLIENT_REFUSE_FRIEND", async (userId) => {
       const myUserId = user._id;
+      userId = validateFriendTarget(userId, myUserId);
       await refuseFriendRequest(myUserId, userId);
       //xóa thông tin A trong danh sách lời mời kết bạn bên B
       socket.emit("SERVER_DELETE_INFO_A", {
@@ -434,6 +542,7 @@ io.on("connection", async (socket) => {
     //accept add friend
     registerAsyncSocketHandler(socket, "CLIENT_ACCEPT_FRIEND", async (userId) => {
       const myUserId = user._id;
+      userId = validateFriendTarget(userId, myUserId);
       await acceptFriendRequest(myUserId, userId);
       //xóa thông tin A trong danh sách lời mời kết bạn bên B
       socket.emit("SERVER_DELETE_INFO_A", {
@@ -460,6 +569,7 @@ io.on("connection", async (socket) => {
     //unfriend
     registerAsyncSocketHandler(socket, "CLIENT_UNFRIEND", async (userId) => {
       const myUserId = user._id;
+      userId = validateFriendTarget(userId, myUserId);
       const roomChatId = await unfriend(myUserId, userId);
       //  realtime cho 2 người
       io.to(myUserId.toString()).emit("SERVER_UNFRIEND_SUCCESS", {
@@ -476,8 +586,9 @@ io.on("connection", async (socket) => {
     registerAsyncSocketHandler(
       socket,
       "CLIENT_READ_ROOM",
-      async ({ roomChatId } = {}, acknowledgement) => {
+      async (payload, acknowledgement) => {
         try {
+          const { roomChatId } = validateRoomActionPayload(payload);
           await requireRoomMember(roomChatId, userId);
 
           const updatedRoom = await RoomChat.findOneAndUpdate(
@@ -514,69 +625,175 @@ io.on("connection", async (socket) => {
         }
       },
     );
-    // Handle outgoing call request
-    socket.on("callToUser", (data) => {
-      const calleeSockets = onlineUser.get(data.callToUserId);
+    registerAsyncSocketHandler(socket, "callToUser", async (data, acknowledgement) => {
+      const { calleeId, signal, type } = validateCallRequest(data, userId);
+      await enforceSocketRateLimit("callStart", userId);
+      await requireCallPermission(userId, calleeId);
 
+      const calleeSockets = onlineUser.get(calleeId);
       if (!calleeSockets?.size) {
-        socket.emit("userUnavailable", {
-          message: "Người dùng hiện chưa đang truy cập!.",
-        }); //  Notify caller if user is offline
+        socket.emit("userUnavailable", { message: "Người dùng hiện không trực tuyến" });
+        return;
+      }
+      if (
+        activeCalls.has(userId) ||
+        activeCalls.has(calleeId) ||
+        hasPendingCall(userId) ||
+        hasPendingCall(calleeId)
+      ) {
+        socket.emit("userBusy", { message: "Người dùng đang trong cuộc gọi khác" });
         return;
       }
 
-      const calleeId = [...calleeSockets][0];
+      const calleeSocketId = [...calleeSockets][0];
+      const callId = randomUUID();
+      const expiryTimer = setTimeout(() => {
+        const expiredCall = removePendingCall(callId);
+        if (expiredCall) {
+          io.to(expiredCall.callerSocketId).emit("callRejected", {
+            callId,
+            name: "Hệ thống",
+            profilepic: "",
+            reason: "timeout",
+          });
+        }
+      }, 60_000);
+      expiryTimer.unref?.();
+      pendingCalls.set(callId, {
+        callId,
+        callerId: userId,
+        calleeId,
+        callerSocketId: socket.id,
+        calleeSocketId,
+        expiryTimer,
+      });
 
-      //  If the user is already in another call
-      if (activeCalls.has(data.callToUserId)) {
-        socket.emit("userBusy", {
-          message: "Người dùng đang trong cuộc gọi khác!",
-        });
+      io.to(calleeSocketId).emit("makeUser", {
+        callId,
+        signal,
+        from: userId,
+        name: user.name,
+        email: user.email,
+        profilepic: user.avatar,
+        type,
+      });
+      if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
+    }, (error, args) => returnCallSocketError(socket, "callToUser", error, args));
 
-        io.to(calleeId).emit("incomingCallWhileBusy", {
-          from: data.from,
-          name: data.name,
-          email: data.email,
-          profilepic: data.profilepic,
-        });
+    registerAsyncSocketHandler(socket, "answeredCall", async (data, acknowledgement) => {
+      const { callId, signal } = validateCallResponse(data);
+      await enforceSocketRateLimit("callAction", userId);
+      const pendingCall = pendingCalls.get(callId);
+      if (
+        !pendingCall ||
+        pendingCall.calleeId !== userId ||
+        pendingCall.calleeSocketId !== socket.id
+      ) {
+        throw new CallSignalingError(403, "CALL_RESPONSE_DENIED", "Không có quyền trả lời cuộc gọi này");
+      }
 
+      removePendingCall(callId);
+      activeCalls.set(pendingCall.callerId, {
+        callId,
+        with: userId,
+        socketId: pendingCall.callerSocketId,
+        peerSocketId: socket.id,
+      });
+      activeCalls.set(userId, {
+        callId,
+        with: pendingCall.callerId,
+        socketId: socket.id,
+        peerSocketId: pendingCall.callerSocketId,
+      });
+      io.to(pendingCall.callerSocketId).emit("callAccepted", {
+        callId,
+        signal,
+        from: userId,
+      });
+      if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
+    }, (error, args) => returnCallSocketError(socket, "answeredCall", error, args));
+
+    registerAsyncSocketHandler(socket, "reject-call", async (data, acknowledgement) => {
+      const callId = validateCallAction(data);
+      await enforceSocketRateLimit("callAction", userId);
+      const pendingCall = pendingCalls.get(callId);
+      if (
+        !pendingCall ||
+        pendingCall.calleeId !== userId ||
+        pendingCall.calleeSocketId !== socket.id
+      ) {
+        throw new CallSignalingError(403, "CALL_REJECTION_DENIED", "Không có quyền từ chối cuộc gọi này");
+      }
+      removePendingCall(callId);
+      io.to(pendingCall.callerSocketId).emit("callRejected", {
+        callId,
+        name: user.name,
+        profilepic: user.avatar,
+      });
+      if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
+    }, (error, args) => returnCallSocketError(socket, "reject-call", error, args));
+
+    registerAsyncSocketHandler(socket, "end-call", async (data, acknowledgement) => {
+      const callId = validateCallAction(data);
+      await enforceSocketRateLimit("callAction", userId);
+      const pendingCall = pendingCalls.get(callId);
+      if (pendingCall) {
+        const isCaller =
+          pendingCall.callerId === userId &&
+          pendingCall.callerSocketId === socket.id;
+        const isCallee =
+          pendingCall.calleeId === userId &&
+          pendingCall.calleeSocketId === socket.id;
+        if (!isCaller && !isCallee) {
+          throw new CallSignalingError(403, "CALL_END_DENIED", "Không có quyền kết thúc cuộc gọi này");
+        }
+        removePendingCall(callId);
+        const peerSocketId = isCaller
+          ? pendingCall.calleeSocketId
+          : pendingCall.callerSocketId;
+        io.to(peerSocketId).emit("callEnded", { callId, by: userId });
+        if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
         return;
       }
 
-      //  Emit an event to the receiver's socket (callee)
-      io.to(calleeId).emit("makeUser", {
-        signal: data.signalData, // WebRTC signal data
-        from: data.from, // Caller ID
-        name: data.name, // Caller name
-        email: data.email, // Caller email
-        profilepic: data.profilepic, // Caller profile picture
-        type: data.type,
-      });
-    });
-    //  Handle when a call is accepted
-    socket.on("answeredCall", (data) => {
-      const sockets = onlineUser.get(data.to);
-
-      if (!sockets?.size) return;
-      const socketId = [...sockets][0];
-      io.to(socketId).emit("callAccepted", {
-        signal: data.signal, // WebRTC signal
-        from: data.from, // Caller ID
-      });
-
-      //  Track active calls in a Map
-      activeCalls.set(data.from, { with: data.to, socketId: socket.id });
-      activeCalls.set(data.to, { with: data.from, socketId: socketId });
-    });
-    // Handle call rejection
-    socket.on("reject-call", (data) => {
-      io.to(data.to).emit("callRejected", {
-        name: data.name,
-        profilepic: data.profilepic,
-      });
-    });
+      const activeCall = activeCalls.get(userId);
+      if (!activeCall || activeCall.callId !== callId || activeCall.socketId !== socket.id) {
+        throw new CallSignalingError(403, "CALL_END_DENIED", "Không có quyền kết thúc cuộc gọi này");
+      }
+      activeCalls.delete(userId);
+      const peerCall = activeCalls.get(activeCall.with);
+      if (peerCall?.callId === callId) activeCalls.delete(activeCall.with);
+      io.to(activeCall.peerSocketId).emit("callEnded", { callId, by: userId });
+      if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
+    }, (error, args) => returnCallSocketError(socket, "end-call", error, args));
     //disconnect
     registerAsyncSocketHandler(socket, "disconnect", async () => {
+      for (const [callId, pendingCall] of pendingCalls.entries()) {
+        if (
+          pendingCall.callerSocketId === socket.id ||
+          pendingCall.calleeSocketId === socket.id
+        ) {
+          removePendingCall(callId);
+          const peerSocketId =
+            pendingCall.callerSocketId === socket.id
+              ? pendingCall.calleeSocketId
+              : pendingCall.callerSocketId;
+          io.to(peerSocketId).emit("callEnded", { callId, by: userId });
+        }
+      }
+      const activeCall = activeCalls.get(userId);
+      if (activeCall?.socketId === socket.id) {
+        activeCalls.delete(userId);
+        const peerCall = activeCalls.get(activeCall.with);
+        if (peerCall?.callId === activeCall.callId) {
+          activeCalls.delete(activeCall.with);
+        }
+        io.to(activeCall.peerSocketId).emit("callEnded", {
+          callId: activeCall.callId,
+          by: userId,
+        });
+      }
+
       const sockets = onlineUser.get(userId);
       if (!sockets) return;
       sockets.delete(socket.id);

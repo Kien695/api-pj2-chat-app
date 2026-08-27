@@ -5,10 +5,17 @@ const RoomChat = require("../model/room-chat.model");
 const Passkey = require("../model/passkey.model");
 const bcryptjs = require("bcryptjs");
 const { randomUUID } = require("crypto");
-const jwt = require("jsonwebtoken");
 const { sendMail } = require("../config/sendMail");
 const { generateAccessToken } = require("../utils/generateAccessToken");
 const { generateRefreshToken } = require("../utils/generateRefreshToken");
+const {
+  RefreshTokenError,
+  rotateRefreshToken,
+} = require("../service/refreshTokenRotation.service");
+const {
+  clearRefreshCookieOptions,
+  refreshCookieOptions,
+} = require("../utils/authCookie");
 const searchHelper = require("../helper/search");
 const Chat = require("../model/chat.model");
 const { myDocument } = require("../helper/createMyDocument");
@@ -28,6 +35,10 @@ const {
   drainMediaCleanupJobs,
   enqueueMediaCleanup,
 } = require("../service/mediaCleanupJob.service");
+const {
+  ProfileUpdateValidationError,
+  validateProfileUpdate,
+} = require("../service/profileUpdateValidation.service");
 const {
   PASSWORD_RESET_TTL_SECONDS,
   PASSWORD_RESET_COOLDOWN_SECONDS,
@@ -235,13 +246,7 @@ module.exports.login = async (req, res) => {
     }
     const accessToken = await generateAccessToken(user._id);
     const refreshToken = await generateRefreshToken(user._id);
-    const cookiesOption = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-    };
-
-    res.cookie("refreshToken", refreshToken, cookiesOption);
+    res.cookie("refreshToken", refreshToken, refreshCookieOptions());
     //tạo my document nếu chưa có
 
     const document = await myDocument(user._id);
@@ -268,13 +273,7 @@ module.exports.login = async (req, res) => {
 module.exports.logout = async (req, res) => {
   try {
     const userId = res.locals.userId;
-    const cookiesOption = {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-    };
-    res.clearCookie("accessToken", cookiesOption);
-    res.clearCookie("refreshToken", cookiesOption);
+    res.clearCookie("refreshToken", clearRefreshCookieOptions());
     await User.findOneAndUpdate(
       { _id: userId },
       {
@@ -483,12 +482,7 @@ module.exports.resetPassword = async (req, res) => {
     user.access_token = "";
     await user.save();
 
-    const cookiesOption = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-    };
-    res.clearCookie("refreshToken", cookiesOption);
+    res.clearCookie("refreshToken", clearRefreshCookieOptions());
 
     writePasswordResetAudit(req, "password_reset", {
       outcome: "success",
@@ -516,36 +510,11 @@ module.exports.resetPassword = async (req, res) => {
 //refreshToken
 module.exports.refreshToken = async (req, res) => {
   try {
-    const refreshToken =
-      req.cookies.refreshToken || req?.headers?.authorization?.split(" ")[1];
-
-    if (!refreshToken) {
-      return res.status(400).json({
-        message: "Token không hợp lệ",
-        error: true,
-        success: false,
-      });
-    }
-    const verifyToken = jwt.verify(refreshToken, process.env.JWT_REFRESH_TOKEN);
-    if (!verifyToken) {
-      return res.status(401).json({
-        error: true,
-        success: false,
-        message: "Token đã hết hạn",
-      });
-    }
-    const userId = verifyToken?.id;
-    const user = await User.findById(userId).select("refresh_token");
-
-    if (!user || !user.refresh_token || user.refresh_token !== refreshToken) {
-      return res.status(401).json({
-        error: true,
-        success: false,
-        message: "Phiên đăng nhập đã bị thu hồi",
-      });
-    }
-
+    const { userId, refreshToken } = await rotateRefreshToken(
+      req.cookies?.refreshToken,
+    );
     const newAccessToken = await generateAccessToken(userId);
+    res.cookie("refreshToken", refreshToken, refreshCookieOptions());
     return res.status(200).json({
       error: false,
       success: true,
@@ -555,6 +524,15 @@ module.exports.refreshToken = async (req, res) => {
       },
     });
   } catch (error) {
+    if (error instanceof RefreshTokenError) {
+      res.clearCookie("refreshToken", clearRefreshCookieOptions());
+      return res.status(error.status).json({
+        message: error.message,
+        code: error.code,
+        error: true,
+        success: false,
+      });
+    }
     return res.status(500).json({
       message: error.message || error,
       error: true,
@@ -771,13 +749,7 @@ module.exports.passkeyLoginVerify = async (req, res) => {
 
     const accessToken = await generateAccessToken(user._id);
     const refreshToken = await generateRefreshToken(user._id);
-    const cookiesOption = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-    };
-
-    res.cookie("refreshToken", refreshToken, cookiesOption);
+    res.cookie("refreshToken", refreshToken, refreshCookieOptions());
     //tạo my document nếu chưa có
 
     const document = await myDocument(user._id);
@@ -912,15 +884,22 @@ module.exports.userImage = async (req, res) => {
 module.exports.updateUser = async (req, res) => {
   try {
     const userId = res.locals.userId;
+    const { set, unset } = validateProfileUpdate(req.body);
+    const update = {};
+    if (Object.keys(set).length > 0) update.$set = set;
+    if (Object.keys(unset).length > 0) update.$unset = unset;
 
-    const existUser = await User.findById(userId);
-    if (!existUser) {
-      return res.status(400).send("Tài khoản không được cập nhật");
-    }
-    // Cập nhật user
-    const updatedUser = await User.findByIdAndUpdate(userId, req.body, {
+    const updatedUser = await User.findByIdAndUpdate(userId, update, {
       new: true,
+      runValidators: true,
     });
+    if (!updatedUser) {
+      return res.status(404).json({
+        message: "Tài khoản không tồn tại",
+        error: true,
+        success: false,
+      });
+    }
     return res.status(200).json({
       message: "Chỉnh sửa tài khoản thành công",
       error: false,
@@ -928,6 +907,22 @@ module.exports.updateUser = async (req, res) => {
       data: updatedUser,
     });
   } catch (error) {
+    if (error instanceof ProfileUpdateValidationError) {
+      return res.status(error.status).json({
+        message: error.message,
+        error: true,
+        success: false,
+        code: error.code,
+      });
+    }
+    if (error?.code === 11000 && error?.keyPattern?.mobile) {
+      return res.status(409).json({
+        message: "Số điện thoại đã được sử dụng",
+        error: true,
+        success: false,
+        code: "MOBILE_ALREADY_EXISTS",
+      });
+    }
     return res.status(500).json({
       message: error.message || error,
       error: true,

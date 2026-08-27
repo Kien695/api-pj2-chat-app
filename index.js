@@ -16,6 +16,9 @@ const {
 const {
   ensureCriticalDatabaseIndexes,
 } = require("./service/databaseIndex.service");
+const {
+  validateAuthenticationConfig,
+} = require("./service/authenticationConfig.service");
 const port = process.env.PORT;
 
 app.set("trust proxy", 1);
@@ -59,6 +62,7 @@ async function startServer() {
     if (!port) {
       throw new Error("PORT environment variable is required");
     }
+    validateAuthenticationConfig();
 
     await database.connect();
     await ensureCriticalDatabaseIndexes();

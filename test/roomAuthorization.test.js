@@ -6,7 +6,9 @@ const Chat = require("../model/chat.model");
 const RoomChat = require("../model/room-chat.model");
 const authMiddleware = require("../middleware/auth.middleware");
 const chatMiddleware = require("../middleware/chat.middleware");
+const restInputValidationMiddleware = require("../middleware/restInputValidation.middleware");
 const uploadCloudMiddleware = require("../middleware/uploadCloud.middleware");
+const validateUploadMiddleware = require("../middleware/validateUpload.middleware");
 const chatRouter = require("../router/chat.router");
 const userRouter = require("../router/user.router");
 const {
@@ -148,8 +150,10 @@ describe("room REST authorization ordering", () => {
     const handlers = getRouteHandlers(chatRouter, "/:roomChatId", "post");
 
     assert.equal(handlers[0], chatMiddleware.isAccess);
-    assert.equal(handlers[1].name, "multerMiddleware");
-    assert.equal(handlers[2], uploadCloudMiddleware.uploadFile);
+    assert.equal(handlers[1].name, "rateLimitMiddleware");
+    assert.equal(handlers[2].name, "multerMiddleware");
+    assert.equal(handlers[3], validateUploadMiddleware.validateChatFileUploads);
+    assert.equal(handlers[4], uploadCloudMiddleware.uploadFile);
   });
 
   test("authenticates and authorizes room edit before upload", () => {
@@ -157,8 +161,11 @@ describe("room REST authorization ordering", () => {
 
     assert.equal(handlers[0], authMiddleware.auth);
     assert.equal(handlers[1], chatMiddleware.isGroupAdmin);
-    assert.equal(handlers[2].name, "multerMiddleware");
-    assert.equal(handlers[3], uploadCloudMiddleware.uploadOne);
+    assert.equal(handlers[2].name, "rateLimitMiddleware");
+    assert.equal(handlers[3].name, "multerMiddleware");
+    assert.equal(handlers[4], restInputValidationMiddleware.validateRoomEdit);
+    assert.equal(handlers[5], validateUploadMiddleware.validateProfileImageUpload);
+    assert.equal(handlers[6], uploadCloudMiddleware.uploadOne);
   });
 
   test("applies the expected policy to every room mutation route", () => {
@@ -179,17 +186,21 @@ describe("room REST authorization ordering", () => {
       authMiddleware.auth,
       chatMiddleware.isGroupAdmin,
     ]);
+    assert.equal(addMember[2].name, "rateLimitMiddleware");
     assert.deepEqual(removeMember.slice(0, 2), [
       authMiddleware.auth,
       chatMiddleware.isGroupAdmin,
     ]);
+    assert.equal(removeMember[2].name, "rateLimitMiddleware");
     assert.deepEqual(leaveGroup.slice(0, 2), [
       authMiddleware.auth,
       chatMiddleware.isAccess,
     ]);
+    assert.equal(leaveGroup[2].name, "rateLimitMiddleware");
     assert.deepEqual(removeRoom.slice(0, 2), [
       authMiddleware.auth,
       chatMiddleware.isGroupAdmin,
     ]);
+    assert.equal(removeRoom[2].name, "rateLimitMiddleware");
   });
 });

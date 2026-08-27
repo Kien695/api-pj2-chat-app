@@ -1,5 +1,7 @@
-const jwt = require("jsonwebtoken");
 const User = require("../model/user.model");
+const {
+  verifyAccessToken,
+} = require("../service/accessTokenAuthentication.service");
 module.exports.getUserDetail = async (token) => {
   if (!token) {
     return {
@@ -7,7 +9,7 @@ module.exports.getUserDetail = async (token) => {
       error: true,
     };
   }
-  const decode = jwt.verify(token, process.env.JWT_ACCESS_TOKEN);
+  const decode = verifyAccessToken(token);
   if (!decode) {
     return {
       error: true,
@@ -16,7 +18,7 @@ module.exports.getUserDetail = async (token) => {
     };
   } else {
     const user = await User.findById(decode.id).select(
-      "-password -refreshToken"
+      "_id name email avatar",
     );
     return user;
   }
