@@ -7,6 +7,7 @@ const {
 } = require("../service/roomAuthorization.service");
 const { cleanupAssets } = require("../service/cloudinaryAsset.service");
 const MediaCleanupJob = require("../model/media-cleanup-job.model");
+const { sendInternalServerError } = require("../utils/httpErrorResponse");
 //get chat
 module.exports.index = async (req, res) => {
   try {
@@ -136,9 +137,6 @@ module.exports.create = async (req, res) => {
       console.error("Rejected chat upload cleanup failed", cleanupError);
     });
     if (sendRoomAuthorizationError(res, error)) return;
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendInternalServerError(res, error, "Create chat upload failed");
   }
 };

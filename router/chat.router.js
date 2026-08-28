@@ -21,5 +21,4 @@ router.post(
   controller.create,
 );
 
-// router.post("/room/join-group");
 module.exports = router;

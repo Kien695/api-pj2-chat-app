@@ -17,11 +17,11 @@ test("room edit and rename system message share one transaction", () => {
 
 test("room edit notification failure cannot change the committed API result", () => {
   const source = fs.readFileSync(
-    path.join(__dirname, "../controller/user.controller.js"),
+    path.join(__dirname, "../controller/room.controller.js"),
     "utf8",
   );
   const start = source.indexOf("module.exports.editRoomChat");
-  const end = source.indexOf("module.exports.searchUser", start);
+  const end = source.indexOf("module.exports.addMember", start);
   const handler = source.slice(start, end);
 
   assert.match(handler, /const mutation = await editRoom/);

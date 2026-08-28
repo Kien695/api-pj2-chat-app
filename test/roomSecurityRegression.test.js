@@ -123,7 +123,7 @@ describe("trusted room mutation event regressions", () => {
       __dirname,
       "..",
       "controller",
-      "user.controller.js",
+      "room.controller.js",
     );
     const source = fs.readFileSync(controllerPath, "utf8");
     const trustedEvents = [

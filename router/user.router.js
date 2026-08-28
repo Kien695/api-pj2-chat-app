@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const controller = require("../controller/user.controller");
+const roomController = require("../controller/room.controller");
 const validate = require("../validate/auth.validate");
 const middleware = require("../middleware/auth.middleware");
 const middlewareChat = require("../middleware/chat.middleware");
@@ -98,9 +99,9 @@ router.post(
   middleware.auth,
   restRateLimit("roomCreate"),
   validateCreateRoom,
-  controller.createRoomChat,
+  roomController.createRoomChat,
 );
-router.get("/getRoom", middleware.auth, controller.getRoomChat);
+router.get("/getRoom", middleware.auth, roomController.getRoomChat);
 router.patch(
   "/editRoom/:id",
   middleware.auth,
@@ -110,16 +111,16 @@ router.patch(
   validateRoomEdit,
   validateProfileImageUpload,
   uploadCloud.uploadOne,
-  controller.editRoomChat,
+  roomController.editRoomChat,
 );
-router.get("/getAllRoomChat", middleware.auth, controller.getAllRoomChat);
+router.get("/getAllRoomChat", middleware.auth, roomController.getAllRoomChat);
 router.patch(
   "/addMember/:id",
   middleware.auth,
   middlewareChat.isGroupAdmin,
   restRateLimit("roomMutation"),
   validateAddMembers,
-  controller.addMember,
+  roomController.addMember,
 );
 router.patch(
   "/removeMember/:id",
@@ -127,20 +128,20 @@ router.patch(
   middlewareChat.isGroupAdmin,
   restRateLimit("roomMutation"),
   validateRemoveMember,
-  controller.removeMember,
+  roomController.removeMember,
 );
 router.patch(
   "/leaveGroup/:id",
   middleware.auth,
   middlewareChat.isAccess,
   restRateLimit("roomMutation"),
-  controller.leaveGroup,
+  roomController.leaveGroup,
 );
 router.delete(
   "/removeRoom/:roomChatId",
   middleware.auth,
   middlewareChat.isGroupAdmin,
   restRateLimit("roomMutation"),
-  controller.removeRoom,
+  roomController.removeRoom,
 );
 module.exports = router;
