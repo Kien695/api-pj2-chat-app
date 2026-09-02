@@ -1,5 +1,4 @@
 const mongoose = require("mongoose");
-const Chat = require("../model/chat.model");
 const RoomChat = require("../model/room-chat.model");
 const {
   requireRoomMember,
@@ -8,6 +7,10 @@ const {
 const { cleanupAssets } = require("../service/cloudinaryAsset.service");
 const MediaCleanupJob = require("../model/media-cleanup-job.model");
 const { sendInternalServerError } = require("../utils/httpErrorResponse");
+const {
+  MessagePaginationError,
+  getMessagePage,
+} = require("../service/messagePagination.service");
 //get chat
 module.exports.index = async (req, res) => {
   try {
@@ -27,17 +30,13 @@ module.exports.index = async (req, res) => {
     const objectUserId = new mongoose.Types.ObjectId(userId);
 
     // 1️ Lấy danh sách tin nhắn
-    const chats = await Chat.find({
-      room_chat_id: objectRoomChatId,
-    })
-      .populate({
-        path: "user_id",
-        select: "name avatar ",
-      })
-      .populate({
-        path: "content_user",
-        select: "name avatar ",
-      });
+    const page = await getMessagePage({
+      roomId: roomChatId,
+      cursor: req.query.cursor,
+      limit: req.query.limit,
+    });
+    const chats = page.messages;
+    const pagination = page.pagination;
 
     // 2️ Lấy room chat
     const room = await RoomChat.findById(objectRoomChatId)
@@ -96,15 +95,21 @@ module.exports.index = async (req, res) => {
     return res.status(200).json({
       success: true,
       data: chats,
+      pagination,
       room: roomInfo,
       users: otherUsers,
       commonGroupCount: commonGroupCount,
     });
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Lỗi server",
-    });
+    if (error instanceof MessagePaginationError) {
+      return res.status(error.status).json({
+        success: false,
+        error: true,
+        code: error.code,
+        message: error.message,
+      });
+    }
+    return sendInternalServerError(res, error, "Get chat failed");
   }
 };
 
@@ -138,5 +143,31 @@ module.exports.create = async (req, res) => {
     });
     if (sendRoomAuthorizationError(res, error)) return;
     return sendInternalServerError(res, error, "Create chat upload failed");
+  }
+};
+
+module.exports.createImages = async (req, res) => {
+  try {
+    const roomChatId = req.params.roomChatId;
+    await requireRoomMember(roomChatId, res.locals.userId);
+    const cleanupJob = await MediaCleanupJob.create({
+      ownerId: res.locals.userId,
+      assets: req.uploadedCloudinaryAssets,
+      nextAttemptAt: new Date(Date.now() + 15 * 60 * 1000),
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: req.body.images.map((image) => ({
+        ...image,
+        cleanup_job_id: cleanupJob._id.toString(),
+      })),
+    });
+  } catch (error) {
+    await cleanupAssets(req.uploadedCloudinaryAssets).catch((cleanupError) => {
+      console.error("Rejected chat image upload cleanup failed", cleanupError);
+    });
+    if (sendRoomAuthorizationError(res, error)) return;
+    return sendInternalServerError(res, error, "Create chat image upload failed");
   }
 };

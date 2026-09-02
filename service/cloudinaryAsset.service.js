@@ -1,4 +1,6 @@
 const cloudinary = require("cloudinary").v2;
+const CLOUDINARY_UPLOAD_CONCURRENCY = 3;
+const CLOUDINARY_CLEANUP_CONCURRENCY = 5;
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
   api_key: process.env.CLOUD_KEY,
@@ -13,41 +15,55 @@ const destroyAsset = (asset) => {
   });
 };
 
+const runWithConcurrency = async (items, limit, worker) => {
+  if (!Array.isArray(items)) throw new TypeError("Items must be an array");
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError("Concurrency limit must be a positive integer");
+  }
+  if (typeof worker !== "function") throw new TypeError("Worker is required");
+
+  const results = new Array(items.length);
+  const errors = [];
+  let nextIndex = 0;
+  const run = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (error) {
+        errors.push({ error, index });
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(limit, items.length) },
+      () => run(),
+    ),
+  );
+  return { errors, results };
+};
+
 const cleanupAssets = async (assets = []) => {
-  const results = await Promise.allSettled(assets.map(destroyAsset));
-  const failures = results.filter((result) => result.status === "rejected");
-  if (failures.length > 0) {
+  const { errors } = await runWithConcurrency(
+    assets,
+    CLOUDINARY_CLEANUP_CONCURRENCY,
+    destroyAsset,
+  );
+  if (errors.length > 0) {
     throw new AggregateError(
-      failures.map((failure) => failure.reason),
+      errors.map(({ error }) => error),
       "Cloudinary cleanup failed",
     );
   }
 };
 
-const uploadImagesWithCompensation = async (base64Images = []) => {
-  const uploaded = [];
-  try {
-    for (const base64 of base64Images) {
-      const result = await cloudinary.uploader.upload(base64, {
-        folder: "chat_app",
-      });
-      uploaded.push({
-        url: result.secure_url,
-        public_id: result.public_id,
-        resource_type: "image",
-      });
-    }
-    return uploaded;
-  } catch (error) {
-    await cleanupAssets(uploaded).catch((cleanupError) => {
-      console.error("Cloudinary upload compensation failed", cleanupError);
-    });
-    throw error;
-  }
-};
-
 module.exports = {
+  CLOUDINARY_CLEANUP_CONCURRENCY,
+  CLOUDINARY_UPLOAD_CONCURRENCY,
   cleanupAssets,
   destroyAsset,
-  uploadImagesWithCompensation,
+  runWithConcurrency,
 };

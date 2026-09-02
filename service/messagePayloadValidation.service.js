@@ -11,11 +11,20 @@ const ALLOWED_MESSAGE_TYPES = new Set([
 ]);
 const MAX_MESSAGE_LENGTH = 10_000;
 const MAX_IMAGE_COUNT = 5;
-const MAX_IMAGE_BASE64_LENGTH = 10 * 1024 * 1024;
 const MAX_FILE_COUNT = 10;
 
 const invalidPayload = (message) =>
   new RoomAuthorizationError(400, "INVALID_MESSAGE_PAYLOAD", message);
+
+const isUploadedAsset = (asset) =>
+  asset &&
+  typeof asset === "object" &&
+  typeof asset.url === "string" &&
+  typeof asset.public_id === "string" &&
+  typeof asset.cleanup_job_id === "string" &&
+  asset.url.length > 0 &&
+  asset.public_id.length > 0 &&
+  /^[a-f\d]{24}$/i.test(asset.cleanup_job_id);
 
 const validateMessagePayload = ({ message, images, file, type }) => {
   if (!ALLOWED_MESSAGE_TYPES.has(type)) {
@@ -33,12 +42,7 @@ const validateMessagePayload = ({ message, images, file, type }) => {
   if (
     !Array.isArray(normalizedImages) ||
     normalizedImages.length > MAX_IMAGE_COUNT ||
-    normalizedImages.some(
-      (image) =>
-        typeof image !== "string" ||
-        image.length === 0 ||
-        image.length > MAX_IMAGE_BASE64_LENGTH,
-    )
+    normalizedImages.some((image) => !isUploadedAsset(image))
   ) {
     throw invalidPayload("Danh sách ảnh không hợp lệ");
   }
@@ -49,14 +53,7 @@ const validateMessagePayload = ({ message, images, file, type }) => {
     normalizedFiles.length > MAX_FILE_COUNT ||
     normalizedFiles.some(
       (item) =>
-        !item ||
-        typeof item !== "object" ||
-        typeof item.url !== "string" ||
-        typeof item.public_id !== "string" ||
-        typeof item.cleanup_job_id !== "string" ||
-        item.url.length === 0 ||
-        item.public_id.length === 0 ||
-        !/^[a-f\d]{24}$/i.test(item.cleanup_job_id),
+        !isUploadedAsset(item),
     )
   ) {
     throw invalidPayload("Danh sách file không hợp lệ");

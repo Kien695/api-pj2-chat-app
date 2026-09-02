@@ -50,9 +50,10 @@ test("chat upload does not expose internal error messages", () => {
     path.join(__dirname, "../controller/chat.controller.js"),
     "utf8",
   );
+  const uploadHandler = source.slice(source.indexOf("module.exports.create"));
 
-  assert.equal(source.includes("message: error.message"), false);
-  assert.match(source, /sendInternalServerError\(res, error/);
+  assert.equal(uploadHandler.includes("message: error.message"), false);
+  assert.match(uploadHandler, /sendInternalServerError\(res, error/);
 });
 
 test("profile handlers use safe internal error responses", () => {

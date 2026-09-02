@@ -51,8 +51,27 @@ const validateChatFileUploads = (req, res, next) => {
   }
 };
 
+const validateChatImageUploads = (req, res, next) => {
+  try {
+    if (!Array.isArray(req.files) || req.files.length === 0) {
+      throw new UploadedFileValidationError(
+        "IMAGE_REQUIRED",
+        "Vui lòng chọn ít nhất một ảnh",
+      );
+    }
+    req.files = req.files.map(validateProfileImage);
+    next();
+  } catch (error) {
+    if (error instanceof UploadedFileValidationError) {
+      return sendValidationError(res, error);
+    }
+    return next(error);
+  }
+};
+
 module.exports = {
   requireProfileImageUpload,
   validateChatFileUploads,
+  validateChatImageUploads,
   validateProfileImageUpload,
 };

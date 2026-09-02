@@ -16,8 +16,8 @@ const { deleteRoom } = require("../service/roomDeletion.service");
 const { editRoom } = require("../service/roomEdit.service");
 const { cleanupAssets } = require("../service/cloudinaryAsset.service");
 const {
-  drainMediaCleanupJobs,
   enqueueMediaCleanup,
+  triggerMediaCleanupWorker,
 } = require("../service/mediaCleanupJob.service");
 const { sendInternalServerError } = require("../utils/httpErrorResponse");
 
@@ -479,9 +479,7 @@ module.exports.removeRoom = async (req, res) => {
     }
 
     if (deletion.hasCleanupJob) {
-      drainMediaCleanupJobs().catch((cleanupError) => {
-        console.error("Immediate media cleanup failed", cleanupError);
-      });
+      void triggerMediaCleanupWorker();
     }
 
     return res

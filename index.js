@@ -19,6 +19,17 @@ const {
 const {
   validateAuthenticationConfig,
 } = require("./service/authenticationConfig.service");
+const {
+  attachSocketRedisAdapter,
+} = require("./service/socketRedisAdapter.service");
+const {
+  startPresenceCleanupWorker,
+  stopPresenceCleanupWorker,
+} = require("./service/presenceCleanupWorker.service");
+const {
+  startCallTimeoutWorker,
+  stopCallTimeoutWorker,
+} = require("./service/callTimeoutWorker.service");
 const port = process.env.PORT;
 
 app.set("trust proxy", 1);
@@ -35,6 +46,7 @@ app.use(cookieParser());
 app.use(helmet());
 
 let isShuttingDown = false;
+let socketRedisAdapter = null;
 
 async function shutdown(signal, exitCode = 0) {
   if (isShuttingDown) return;
@@ -42,10 +54,13 @@ async function shutdown(signal, exitCode = 0) {
 
   console.log(`Shutting down server: ${signal}`);
   try {
-    stopMediaCleanupWorker();
+    await stopCallTimeoutWorker();
+    await stopPresenceCleanupWorker();
+    await stopMediaCleanupWorker();
     await shutdownServices({
       io: getIO(),
       server,
+      socketRedisAdapter,
       redisClient: client,
       database,
     });
@@ -67,11 +82,17 @@ async function startServer() {
     await database.connect();
     await ensureCriticalDatabaseIndexes();
     await client.connect();
+    socketRedisAdapter = await attachSocketRedisAdapter({
+      io: getIO(),
+      redisClient: client,
+    });
 
     const router = require("./router/index.router");
     router(app);
 
     await listen(server, port);
+    startCallTimeoutWorker(getIO());
+    startPresenceCleanupWorker(getIO());
     startMediaCleanupWorker();
     console.log(`App listening on port ${port}`);
   } catch (error) {

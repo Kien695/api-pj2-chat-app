@@ -6,9 +6,75 @@ const cloudinary = require("cloudinary").v2;
 
 const MediaCleanupJob = require("../model/media-cleanup-job.model");
 const {
+  createMediaCleanupScheduler,
+} = require("../service/mediaCleanupJob.service");
+const {
+  CLOUDINARY_CLEANUP_CONCURRENCY,
+  CLOUDINARY_UPLOAD_CONCURRENCY,
   cleanupAssets,
-  uploadImagesWithCompensation,
+  runWithConcurrency,
 } = require("../service/cloudinaryAsset.service");
+
+test("bounds concurrent Cloudinary work and preserves result order", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const { errors, results } = await runWithConcurrency(
+    [1, 2, 3, 4, 5, 6],
+    2,
+    async (value) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setImmediate(resolve));
+      active -= 1;
+      return value * 2;
+    },
+  );
+
+  assert.equal(maximumActive, 2);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(results, [2, 4, 6, 8, 10, 12]);
+  assert.equal(CLOUDINARY_UPLOAD_CONCURRENCY, 3);
+  assert.equal(CLOUDINARY_CLEANUP_CONCURRENCY, 5);
+});
+
+test("media cleanup scheduler prevents overlap and waits during stop", async () => {
+  let release;
+  let scheduledRun;
+  let runCalls = 0;
+  let clearedTimer = false;
+  const scheduler = createMediaCleanupScheduler({
+    runDrain: async () => {
+      runCalls += 1;
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+    logger: { error() {} },
+    setIntervalImpl(callback) {
+      scheduledRun = callback;
+      return { unref() {} };
+    },
+    clearIntervalImpl() {
+      clearedTimer = true;
+    },
+  });
+
+  scheduler.start();
+  await Promise.resolve();
+  assert.equal(await scheduledRun(), false);
+  assert.equal(runCalls, 1);
+  release();
+  await scheduler.stop();
+  assert.equal(clearedTimer, true);
+});
+
+test("server awaits media cleanup before closing dependencies", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../index.js"),
+    "utf8",
+  );
+  assert.match(source, /await stopMediaCleanupWorker\(\)/);
+});
 
 test("media cleanup attempts every asset and reports partial failure", async () => {
   const originalDestroy = cloudinary.uploader.destroy;
@@ -31,28 +97,6 @@ test("media cleanup attempts every asset and reports partial failure", async () 
       { publicId: "file-1", resourceType: "raw" },
     ]);
   } finally {
-    cloudinary.uploader.destroy = originalDestroy;
-  }
-});
-
-test("partial image upload failure compensates successful uploads", async () => {
-  const originalUpload = cloudinary.uploader.upload;
-  const originalDestroy = cloudinary.uploader.destroy;
-  const destroyed = [];
-  cloudinary.uploader.upload = async (value) => {
-    if (value === "bad-image") throw new Error("upload failed");
-    return { secure_url: "https://asset/one", public_id: "image-1" };
-  };
-  cloudinary.uploader.destroy = async (publicId) => destroyed.push(publicId);
-
-  try {
-    await assert.rejects(
-      uploadImagesWithCompensation(["good-image", "bad-image"]),
-      /upload failed/,
-    );
-    assert.deepEqual(destroyed, ["image-1"]);
-  } finally {
-    cloudinary.uploader.upload = originalUpload;
     cloudinary.uploader.destroy = originalDestroy;
   }
 });

@@ -104,6 +104,41 @@ test("shutdown waits for Socket.IO before closing Redis and MongoDB", async () =
   assert.deepEqual(closed, ["socket-started", "redis", "mongo"]);
 });
 
+test("shutdown closes Socket.IO adapter clients before the main Redis client", async () => {
+  const calls = [];
+  const io = {
+    close(done) {
+      calls.push("socket");
+      done();
+    },
+  };
+  const socketRedisAdapter = {
+    async close() {
+      calls.push("adapter");
+    },
+  };
+  const redisClient = {
+    isOpen: true,
+    async quit() {
+      calls.push("redis");
+    },
+  };
+  const database = {
+    async disconnect() {
+      calls.push("mongo");
+    },
+  };
+
+  await shutdownServices({
+    io,
+    socketRedisAdapter,
+    redisClient,
+    database,
+  });
+
+  assert.deepEqual(calls, ["socket", "adapter", "redis", "mongo"]);
+});
+
 test("shutdown timeout forces HTTP connections closed and continues cleanup", async () => {
   const closed = [];
   const io = { close: () => { closed.push("socket-timeout"); } };

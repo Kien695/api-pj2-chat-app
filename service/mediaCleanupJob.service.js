@@ -5,7 +5,6 @@ const { cleanupAssets } = require("./cloudinaryAsset.service");
 const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 const WORKER_INTERVAL_MS = 30 * 1000;
 const ROOM_MESSAGE_BATCH_SIZE = 100;
-let workerTimer;
 
 const claimJob = () => {
   const now = new Date();
@@ -96,37 +95,83 @@ const drainMediaCleanupJobs = async (limit = 10) => {
   }
 };
 
+const createMediaCleanupScheduler = ({
+  runDrain = drainMediaCleanupJobs,
+  intervalMs = WORKER_INTERVAL_MS,
+  logger = console,
+  setIntervalImpl = setInterval,
+  clearIntervalImpl = clearInterval,
+} = {}) => {
+  let timer = null;
+  let activeRun = null;
+
+  const run = () => {
+    if (activeRun) return Promise.resolve(false);
+    activeRun = (async () => {
+      try {
+        await runDrain();
+        return true;
+      } catch (error) {
+        logger.error("Media cleanup worker failed", error);
+        return false;
+      } finally {
+        activeRun = null;
+      }
+    })();
+    return activeRun;
+  };
+
+  const start = () => {
+    if (timer) return;
+    void run();
+    timer = setIntervalImpl(run, intervalMs);
+    timer.unref?.();
+  };
+
+  const stop = async () => {
+    if (timer) {
+      clearIntervalImpl(timer);
+      timer = null;
+    }
+    if (activeRun) await activeRun;
+  };
+
+  return { run, start, stop };
+};
+
+let mediaCleanupScheduler = null;
+
+const getMediaCleanupScheduler = () => {
+  if (!mediaCleanupScheduler) {
+    mediaCleanupScheduler = createMediaCleanupScheduler();
+  }
+  return mediaCleanupScheduler;
+};
+
+const triggerMediaCleanupWorker = () => getMediaCleanupScheduler().run();
+
 const enqueueMediaCleanup = async (assets) => {
   if (!assets?.length) return;
   await MediaCleanupJob.create({ assets });
-  drainMediaCleanupJobs().catch((error) => {
-    console.error("Immediate media cleanup failed", error);
-  });
+  void triggerMediaCleanupWorker();
 };
 
 const startMediaCleanupWorker = () => {
-  if (workerTimer) return;
-  drainMediaCleanupJobs().catch((error) => {
-    console.error("Media cleanup worker failed", error);
-  });
-  workerTimer = setInterval(() => {
-    drainMediaCleanupJobs().catch((error) => {
-      console.error("Media cleanup worker failed", error);
-    });
-  }, WORKER_INTERVAL_MS);
-  workerTimer.unref();
+  getMediaCleanupScheduler().start();
 };
 
-const stopMediaCleanupWorker = () => {
-  if (!workerTimer) return;
-  clearInterval(workerTimer);
-  workerTimer = undefined;
+const stopMediaCleanupWorker = async () => {
+  if (!mediaCleanupScheduler) return;
+  await mediaCleanupScheduler.stop();
+  mediaCleanupScheduler = null;
 };
 
 module.exports = {
+  createMediaCleanupScheduler,
   drainMediaCleanupJobs,
   enqueueMediaCleanup,
   processNextMediaCleanupJob,
   startMediaCleanupWorker,
   stopMediaCleanupWorker,
+  triggerMediaCleanupWorker,
 };

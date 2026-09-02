@@ -43,6 +43,7 @@ const withTimeout = (operation, timeoutMs, label) => {
 const shutdownServices = async ({
   io,
   server,
+  socketRedisAdapter,
   redisClient,
   database,
   timeoutMs = 10_000,
@@ -70,6 +71,11 @@ const shutdownServices = async ({
     server.closeAllConnections();
   }
 
+  if (socketRedisAdapter?.close) {
+    await attempt("Socket.IO Redis adapter shutdown", () =>
+      socketRedisAdapter.close(),
+    );
+  }
   if (redisClient?.isOpen) {
     await attempt("Redis shutdown", () => redisClient.quit());
   }

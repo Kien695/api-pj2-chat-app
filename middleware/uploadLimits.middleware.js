@@ -2,6 +2,8 @@ const multer = require("multer");
 
 const MEBIBYTE = 1024 * 1024;
 const PROFILE_IMAGE_MAX_BYTES = 8 * MEBIBYTE;
+const CHAT_IMAGE_MAX_BYTES = 8 * MEBIBYTE;
+const CHAT_IMAGE_MAX_COUNT = 5;
 const CHAT_FILE_MAX_BYTES = 10 * MEBIBYTE;
 const CHAT_FILE_MAX_COUNT = 5;
 
@@ -28,6 +30,17 @@ const chatFileUpload = multer({
     parts: CHAT_FILE_MAX_COUNT + 1,
   },
 }).array("files", CHAT_FILE_MAX_COUNT);
+
+const chatImageUpload = multer({
+  storage: memoryStorage,
+  limits: {
+    fileSize: CHAT_IMAGE_MAX_BYTES,
+    files: CHAT_IMAGE_MAX_COUNT,
+    fields: 1,
+    fieldSize: 10 * 1024,
+    parts: CHAT_IMAGE_MAX_COUNT + 1,
+  },
+}).array("images", CHAT_IMAGE_MAX_COUNT);
 
 const mapUploadError = (error) => {
   if (!(error instanceof multer.MulterError)) return null;
@@ -56,9 +69,12 @@ const handleUpload = (uploadMiddleware) =>
   };
 
 module.exports = {
+  CHAT_IMAGE_MAX_BYTES,
+  CHAT_IMAGE_MAX_COUNT,
   CHAT_FILE_MAX_BYTES,
   CHAT_FILE_MAX_COUNT,
   PROFILE_IMAGE_MAX_BYTES,
+  chatImageUpload: handleUpload(chatImageUpload),
   chatFileUpload: handleUpload(chatFileUpload),
   mapUploadError,
   profileImageUpload: handleUpload(profileImageUpload),

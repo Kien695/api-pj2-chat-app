@@ -68,7 +68,11 @@ const persistMessage = async ({
         }
       });
 
-      await consumeUploadCleanupLeases({ files, userId, session });
+      await consumeUploadCleanupLeases({
+        files: [...images, ...files].filter((asset) => asset.cleanup_job_id),
+        userId,
+        session,
+      });
 
       const [savedMessage] = await Chat.create(
         [

@@ -5,6 +5,9 @@ const {
   validateFileName,
   validateProfileImage,
 } = require("../service/uploadedFileValidation.service");
+const {
+  validateChatImageUploads,
+} = require("../middleware/validateUpload.middleware");
 
 const file = (originalname, mimetype, buffer) => ({ originalname, mimetype, buffer });
 
@@ -19,6 +22,27 @@ test("accepts profile images only when magic bytes, MIME and extension agree", (
     () => validateProfileImage(file("avatar.svg", "image/svg+xml", Buffer.from("<svg/>"))),
     (error) => error.code === "UNSUPPORTED_IMAGE_TYPE",
   );
+});
+
+test("chat image middleware requires and validates every image", () => {
+  const req = {
+    files: [file("chat.jpg", "image/jpeg", Buffer.from([0xff, 0xd8, 0xff]))],
+  };
+  validateChatImageUploads(req, {}, () => {});
+  assert.equal(req.files[0].verifiedMime, "image/jpeg");
+
+  let statusCode;
+  let responseBody;
+  validateChatImageUploads(
+    { files: [] },
+    {
+      status(value) { statusCode = value; return this; },
+      json(value) { responseBody = value; return this; },
+    },
+    () => assert.fail("must not continue"),
+  );
+  assert.equal(statusCode, 415);
+  assert.equal(responseBody.code, "IMAGE_REQUIRED");
 });
 
 test("accepts verified PDF, text, JSON and Office Open XML chat files", () => {

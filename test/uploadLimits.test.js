@@ -4,6 +4,8 @@ const path = require("node:path");
 const test = require("node:test");
 const multer = require("multer");
 const {
+  CHAT_IMAGE_MAX_BYTES,
+  CHAT_IMAGE_MAX_COUNT,
   CHAT_FILE_MAX_BYTES,
   CHAT_FILE_MAX_COUNT,
   PROFILE_IMAGE_MAX_BYTES,
@@ -12,6 +14,8 @@ const {
 
 test("uses bounded memory limits for profile images and chat files", () => {
   assert.equal(PROFILE_IMAGE_MAX_BYTES, 8 * 1024 * 1024);
+  assert.equal(CHAT_IMAGE_MAX_BYTES, 8 * 1024 * 1024);
+  assert.equal(CHAT_IMAGE_MAX_COUNT, 5);
   assert.equal(CHAT_FILE_MAX_BYTES, 10 * 1024 * 1024);
   assert.equal(CHAT_FILE_MAX_COUNT, 5);
 });
@@ -37,5 +41,9 @@ test("auth and room authorization run before upload allocation", () => {
   assert.match(
     chatRouter,
     /"\/:roomChatId",\s*middlewareChat\.isAccess,\s*restRateLimit\("chatUpload"\),\s*chatFileUpload,/,
+  );
+  assert.match(
+    chatRouter,
+    /"\/:roomChatId\/images",\s*middlewareChat\.isAccess,\s*restRateLimit\("chatUpload"\),\s*chatImageUpload,\s*validateChatImageUploads,\s*cloudinary\.uploadImages,/,
   );
 });

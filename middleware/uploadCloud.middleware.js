@@ -1,5 +1,10 @@
 const cloudinary = require("cloudinary").v2;
 const streamifier = require("streamifier");
+const {
+  CLOUDINARY_UPLOAD_CONCURRENCY,
+  cleanupAssets,
+  runWithConcurrency,
+} = require("../service/cloudinaryAsset.service");
 const IMAGE_UPLOAD_OPTIONS = {
   resource_type: "image",
   folder: "chat/images",
@@ -66,37 +71,49 @@ module.exports.uploadOne = async (req, res, next) => {
 module.exports.uploadFile = async (req, res, next) => {
   if (!req.files || !req.files.length) return next();
 
-  const uploadedFiles = [];
+  let uploadedFiles = [];
   try {
-    for (const file of req.files) {
-      const result = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          RAW_UPLOAD_OPTIONS,
-          (err, result) => {
-            if (result?.secure_url?.startsWith("https://") && result.public_id) {
-              resolve(result);
-            } else reject(err || new Error("Invalid Cloudinary file response"));
-          },
-        );
+    const { errors, results } = await runWithConcurrency(
+      req.files,
+      CLOUDINARY_UPLOAD_CONCURRENCY,
+      async (file) => {
+        const result = await new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            RAW_UPLOAD_OPTIONS,
+            (err, result) => {
+              if (
+                result?.secure_url?.startsWith("https://") &&
+                result.public_id
+              ) {
+                resolve(result);
+              } else {
+                reject(err || new Error("Invalid Cloudinary file response"));
+              }
+            },
+          );
 
-        streamifier.createReadStream(file.buffer).pipe(stream);
-      });
+          streamifier.createReadStream(file.buffer).pipe(stream);
+        });
 
-      uploadedFiles.push({
-        url: result.secure_url,
-        public_id: result.public_id,
-        name: file.originalname,
-        size: file.size,
-        type: file.verifiedMime,
-        resource_type: "raw",
-      });
+        return {
+          url: result.secure_url,
+          public_id: result.public_id,
+          name: file.originalname,
+          size: file.size,
+          type: file.verifiedMime,
+          resource_type: "raw",
+        };
+      },
+    );
+    uploadedFiles = results.filter(Boolean);
+    if (errors.length > 0) {
+      throw errors[0].error;
     }
 
     req.body.files = uploadedFiles;
     req.uploadedCloudinaryAssets = uploadedFiles;
     next();
   } catch (err) {
-    const { cleanupAssets } = require("../service/cloudinaryAsset.service");
     await cleanupAssets(uploadedFiles).catch((cleanupError) => {
       console.error("Partial file upload cleanup failed", cleanupError);
     });
@@ -106,6 +123,59 @@ module.exports.uploadFile = async (req, res, next) => {
       error: true,
       code: "FILE_UPLOAD_PROVIDER_FAILED",
       message: "Không thể tải file lên dịch vụ lưu trữ",
+    });
+  }
+};
+
+module.exports.uploadImages = async (req, res, next) => {
+  if (!req.files || !req.files.length) return next();
+
+  let uploadedImages = [];
+  try {
+    const { errors, results } = await runWithConcurrency(
+      req.files,
+      CLOUDINARY_UPLOAD_CONCURRENCY,
+      async (file) => {
+        const result = await new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            IMAGE_UPLOAD_OPTIONS,
+            (error, value) => {
+              if (
+                value?.secure_url?.startsWith("https://") &&
+                value.public_id
+              ) {
+                resolve(value);
+              } else {
+                reject(error || new Error("Invalid Cloudinary image response"));
+              }
+            },
+          );
+          streamifier.createReadStream(file.buffer).pipe(stream);
+        });
+
+        return {
+          url: result.secure_url,
+          public_id: result.public_id,
+          resource_type: "image",
+        };
+      },
+    );
+    uploadedImages = results.filter(Boolean);
+    if (errors.length > 0) throw errors[0].error;
+
+    req.body.images = uploadedImages;
+    req.uploadedCloudinaryAssets = uploadedImages;
+    next();
+  } catch (error) {
+    await cleanupAssets(uploadedImages).catch((cleanupError) => {
+      console.error("Partial image upload cleanup failed", cleanupError);
+    });
+    console.error("Cloudinary chat image upload failed", error?.message);
+    return res.status(502).json({
+      success: false,
+      error: true,
+      code: "IMAGE_UPLOAD_PROVIDER_FAILED",
+      message: "Không thể tải ảnh lên dịch vụ lưu trữ",
     });
   }
 };

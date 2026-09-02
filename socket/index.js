@@ -29,10 +29,6 @@ const {
 } = require("../service/friendship.service");
 const { persistMessage } = require("../service/messagePersistence.service");
 const {
-  cleanupAssets,
-  uploadImagesWithCompensation,
-} = require("../service/cloudinaryAsset.service");
-const {
   validateMessagePayload,
 } = require("../service/messagePayloadValidation.service");
 const {
@@ -53,6 +49,20 @@ const {
   validateRoomActionPayload,
   validateTypingPayload,
 } = require("../service/socketPayloadValidation.service");
+const {
+  isPresenceOnline,
+  listOnlineUserIds,
+  removePresence,
+  upsertPresence,
+} = require("../service/presence.service");
+const {
+  CallStateError,
+  acceptPendingCall,
+  cleanupCallsForSocket,
+  createPendingCall,
+  endCall,
+  rejectPendingCall,
+} = require("../service/callState.service");
 const app = express();
 
 // socket connection
@@ -66,25 +76,10 @@ const io = new Server(server, {
 
 // socket running at localhost:3000
 
-const activeCalls = new Map();
-const pendingCalls = new Map();
-
 //online user
 const onlineUser = new Map();
 
 io.use(socketAuthenticationMiddleware);
-
-const removePendingCall = (callId) => {
-  const pendingCall = pendingCalls.get(callId);
-  if (pendingCall?.expiryTimer) clearTimeout(pendingCall.expiryTimer);
-  pendingCalls.delete(callId);
-  return pendingCall;
-};
-
-const hasPendingCall = (userId) =>
-  [...pendingCalls.values()].some(
-    (call) => call.callerId === userId || call.calleeId === userId,
-  );
 
 const returnCallSocketError = (socket, event, error, args) => {
   const acknowledgement = args.at(-1);
@@ -218,6 +213,20 @@ io.on("connection", async (socket) => {
     console.log("User connected:", userId);
 
     socket.join(userId);
+    const distributedSocketCount = await upsertPresence({
+      userId,
+      socketId: socket.id,
+    });
+    const presenceHeartbeat = setInterval(() => {
+      upsertPresence({ userId, socketId: socket.id }).catch((error) => {
+        console.error("Socket presence heartbeat failed", {
+          socketId: socket.id,
+          userId,
+          error,
+        });
+      });
+    }, 30_000);
+    presenceHeartbeat.unref?.();
     // Nhận room ID và join room
     registerAsyncSocketHandler(socket, "JOIN_ROOM", async (payload, acknowledgement) => {
       try {
@@ -246,19 +255,17 @@ io.on("connection", async (socket) => {
     }
     onlineUser.get(userId).add(socket.id);
     //  GỬI DANH SÁCH ONLINE NGAY KHI CONNECT
-    const onlineUsersPayload = {};
-    for (const [uid, sockets] of onlineUser.entries()) {
-      if (sockets.size > 0) {
-        onlineUsersPayload[uid] = {
-          status: "online",
-          lastActive: null,
-        };
-      }
-    }
+    const onlineUserIds = await listOnlineUserIds();
+    const onlineUsersPayload = Object.fromEntries(
+      onlineUserIds.map((uid) => [
+        uid,
+        { status: "online", lastActive: null },
+      ]),
+    );
 
     socket.emit("SERVER_ONLINE_USERS", onlineUsersPayload);
     //Nếu socket đầu tiên thì online
-    if (onlineUser.get(userId).size === 1) {
+    if (distributedSocketCount === 1) {
       await User.updateOne({ _id: userId }, { status: "online" });
       socket.broadcast.emit("SERVER_USER_ONLINE", {
         userId: userId,
@@ -302,17 +309,19 @@ io.on("connection", async (socket) => {
             "Danh sách phòng chat không hợp lệ",
           );
         }
+        if (images.length > 0 && roomIds.length !== 1) {
+          throw new RoomAuthorizationError(
+            400,
+            "IMAGE_SINGLE_ROOM_REQUIRED",
+            "Tin nhắn có ảnh chỉ được gửi đến một phòng",
+          );
+        }
 
         await enforceSocketRateLimit("message", userId, roomIds.length);
 
         // Xác thực toàn bộ target trước upload để tránh ghi một phần hoặc tốn phí.
         await requireRoomMembers(roomIds, userId);
 
-        let uploadsImages = [];
-
-        if (images && images.length > 0) {
-          uploadsImages = await uploadImagesWithCompensation(images);
-        }
         const results = [];
         for (const authorizedRoomId of roomIds) {
           try {
@@ -321,7 +330,7 @@ io.on("connection", async (socket) => {
               userId,
               clientMessageId: clientMessageId.trim(),
               content: message,
-              images: uploadsImages,
+              images,
               files: Array.isArray(file) ? file : [],
               type,
             });
@@ -349,10 +358,10 @@ io.on("connection", async (socket) => {
             if (!persisted.duplicate) {
               io.to(authorizedRoomId).emit("SERVER_RETURN_MASSAGE", payload);
               persisted.room.users.forEach((member) => {
-                const sockets = onlineUser.get(member.user_id.toString());
-                sockets?.forEach((socketId) => {
-                  io.to(socketId).emit("SERVER_RETURN_SIDEBAR", payload);
-                });
+                io.to(member.user_id.toString()).emit(
+                  "SERVER_RETURN_SIDEBAR",
+                  payload,
+                );
               });
             }
 
@@ -382,14 +391,6 @@ io.on("connection", async (socket) => {
           clientMessageId: clientMessageId.trim(),
           results,
         };
-        const uploadedAssetsAreUnreferenced =
-          uploadsImages.length > 0 &&
-          !results.some((result) => result.success && !result.duplicate);
-        if (uploadedAssetsAreUnreferenced) {
-          await cleanupAssets(uploadsImages).catch((cleanupError) => {
-            console.error("Rejected message upload cleanup failed", cleanupError);
-          });
-        }
         if (typeof acknowledgement === "function") {
           acknowledgement(response);
         } else if (!response.success) {
@@ -630,45 +631,29 @@ io.on("connection", async (socket) => {
       await enforceSocketRateLimit("callStart", userId);
       await requireCallPermission(userId, calleeId);
 
-      const calleeSockets = onlineUser.get(calleeId);
-      if (!calleeSockets?.size) {
+      if (!(await isPresenceOnline({ userId: calleeId }))) {
         socket.emit("userUnavailable", { message: "Người dùng hiện không trực tuyến" });
         return;
       }
-      if (
-        activeCalls.has(userId) ||
-        activeCalls.has(calleeId) ||
-        hasPendingCall(userId) ||
-        hasPendingCall(calleeId)
-      ) {
-        socket.emit("userBusy", { message: "Người dùng đang trong cuộc gọi khác" });
-        return;
+
+      const callId = randomUUID();
+      try {
+        await createPendingCall({
+          callId,
+          callerId: userId,
+          calleeId,
+          callerSocketId: socket.id,
+          type,
+        });
+      } catch (error) {
+        if (error instanceof CallStateError && error.code === "USER_BUSY") {
+          socket.emit("userBusy", { message: "Người dùng đang trong cuộc gọi khác" });
+          return;
+        }
+        throw error;
       }
 
-      const calleeSocketId = [...calleeSockets][0];
-      const callId = randomUUID();
-      const expiryTimer = setTimeout(() => {
-        const expiredCall = removePendingCall(callId);
-        if (expiredCall) {
-          io.to(expiredCall.callerSocketId).emit("callRejected", {
-            callId,
-            name: "Hệ thống",
-            profilepic: "",
-            reason: "timeout",
-          });
-        }
-      }, 60_000);
-      expiryTimer.unref?.();
-      pendingCalls.set(callId, {
-        callId,
-        callerId: userId,
-        calleeId,
-        callerSocketId: socket.id,
-        calleeSocketId,
-        expiryTimer,
-      });
-
-      io.to(calleeSocketId).emit("makeUser", {
+      io.to(calleeId).emit("makeUser", {
         callId,
         signal,
         from: userId,
@@ -683,29 +668,25 @@ io.on("connection", async (socket) => {
     registerAsyncSocketHandler(socket, "answeredCall", async (data, acknowledgement) => {
       const { callId, signal } = validateCallResponse(data);
       await enforceSocketRateLimit("callAction", userId);
-      const pendingCall = pendingCalls.get(callId);
-      if (
-        !pendingCall ||
-        pendingCall.calleeId !== userId ||
-        pendingCall.calleeSocketId !== socket.id
-      ) {
-        throw new CallSignalingError(403, "CALL_RESPONSE_DENIED", "Không có quyền trả lời cuộc gọi này");
+      let acceptedCall;
+      try {
+        acceptedCall = await acceptPendingCall({
+          callId,
+          calleeId: userId,
+          calleeSocketId: socket.id,
+        });
+      } catch (error) {
+        if (error instanceof CallStateError) {
+          if (error.code === "CALL_RESPONSE_DENIED") {
+            throw new CallSignalingError(403, error.code, "Không có quyền trả lời cuộc gọi này");
+          }
+          throw new CallSignalingError(409, "CALL_ALREADY_ANSWERED", "Cuộc gọi không còn chờ trả lời");
+        }
+        throw error;
       }
 
-      removePendingCall(callId);
-      activeCalls.set(pendingCall.callerId, {
-        callId,
-        with: userId,
-        socketId: pendingCall.callerSocketId,
-        peerSocketId: socket.id,
-      });
-      activeCalls.set(userId, {
-        callId,
-        with: pendingCall.callerId,
-        socketId: socket.id,
-        peerSocketId: pendingCall.callerSocketId,
-      });
-      io.to(pendingCall.callerSocketId).emit("callAccepted", {
+      socket.to(userId).emit("callAnsweredElsewhere", { callId });
+      io.to(acceptedCall.callerSocketId).emit("callAccepted", {
         callId,
         signal,
         from: userId,
@@ -716,89 +697,100 @@ io.on("connection", async (socket) => {
     registerAsyncSocketHandler(socket, "reject-call", async (data, acknowledgement) => {
       const callId = validateCallAction(data);
       await enforceSocketRateLimit("callAction", userId);
-      const pendingCall = pendingCalls.get(callId);
-      if (
-        !pendingCall ||
-        pendingCall.calleeId !== userId ||
-        pendingCall.calleeSocketId !== socket.id
-      ) {
-        throw new CallSignalingError(403, "CALL_REJECTION_DENIED", "Không có quyền từ chối cuộc gọi này");
+      let rejectedCall;
+      try {
+        rejectedCall = await rejectPendingCall({
+          callId,
+          actorId: userId,
+          actorSocketId: socket.id,
+        });
+      } catch (error) {
+        if (error instanceof CallStateError) {
+          if (error.code === "CALL_ACTION_DENIED") {
+            throw new CallSignalingError(403, "CALL_REJECTION_DENIED", "Không có quyền từ chối cuộc gọi này");
+          }
+          throw new CallSignalingError(409, "CALL_NOT_PENDING", "Cuộc gọi không còn chờ trả lời");
+        }
+        throw error;
       }
-      removePendingCall(callId);
-      io.to(pendingCall.callerSocketId).emit("callRejected", {
+      io.to(rejectedCall.peerSocketId).emit("callRejected", {
         callId,
         name: user.name,
         profilepic: user.avatar,
       });
+      socket.to(userId).emit("callEnded", { callId, by: userId });
       if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
     }, (error, args) => returnCallSocketError(socket, "reject-call", error, args));
 
     registerAsyncSocketHandler(socket, "end-call", async (data, acknowledgement) => {
       const callId = validateCallAction(data);
       await enforceSocketRateLimit("callAction", userId);
-      const pendingCall = pendingCalls.get(callId);
-      if (pendingCall) {
-        const isCaller =
-          pendingCall.callerId === userId &&
-          pendingCall.callerSocketId === socket.id;
-        const isCallee =
-          pendingCall.calleeId === userId &&
-          pendingCall.calleeSocketId === socket.id;
-        if (!isCaller && !isCallee) {
-          throw new CallSignalingError(403, "CALL_END_DENIED", "Không có quyền kết thúc cuộc gọi này");
+      let endedCall;
+      try {
+        endedCall = await endCall({
+          callId,
+          actorId: userId,
+          actorSocketId: socket.id,
+        });
+      } catch (error) {
+        if (error instanceof CallStateError) {
+          if (error.code === "CALL_ACTION_DENIED") {
+            throw new CallSignalingError(403, "CALL_END_DENIED", "Không có quyền kết thúc cuộc gọi này");
+          }
+          throw new CallSignalingError(409, "CALL_ALREADY_ENDED", "Cuộc gọi đã kết thúc");
         }
-        removePendingCall(callId);
-        const peerSocketId = isCaller
-          ? pendingCall.calleeSocketId
-          : pendingCall.callerSocketId;
-        io.to(peerSocketId).emit("callEnded", { callId, by: userId });
-        if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
-        return;
+        throw error;
       }
 
-      const activeCall = activeCalls.get(userId);
-      if (!activeCall || activeCall.callId !== callId || activeCall.socketId !== socket.id) {
-        throw new CallSignalingError(403, "CALL_END_DENIED", "Không có quyền kết thúc cuộc gọi này");
-      }
-      activeCalls.delete(userId);
-      const peerCall = activeCalls.get(activeCall.with);
-      if (peerCall?.callId === callId) activeCalls.delete(activeCall.with);
-      io.to(activeCall.peerSocketId).emit("callEnded", { callId, by: userId });
+      const peerTarget = endedCall.peerSocketId || endedCall.peerUserId;
+      io.to(peerTarget).emit("callEnded", { callId, by: userId });
+      socket.to(userId).emit("callEnded", { callId, by: userId });
       if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
     }, (error, args) => returnCallSocketError(socket, "end-call", error, args));
     //disconnect
     registerAsyncSocketHandler(socket, "disconnect", async () => {
-      for (const [callId, pendingCall] of pendingCalls.entries()) {
-        if (
-          pendingCall.callerSocketId === socket.id ||
-          pendingCall.calleeSocketId === socket.id
-        ) {
-          removePendingCall(callId);
-          const peerSocketId =
-            pendingCall.callerSocketId === socket.id
-              ? pendingCall.calleeSocketId
-              : pendingCall.callerSocketId;
-          io.to(peerSocketId).emit("callEnded", { callId, by: userId });
-        }
+      clearInterval(presenceHeartbeat);
+      let distributedSocketCountAfterDisconnect = null;
+      try {
+        distributedSocketCountAfterDisconnect = await removePresence({
+          userId,
+          socketId: socket.id,
+        });
+      } catch (error) {
+        console.error("Socket presence removal failed", {
+          socketId: socket.id,
+          userId,
+          error,
+        });
       }
-      const activeCall = activeCalls.get(userId);
-      if (activeCall?.socketId === socket.id) {
-        activeCalls.delete(userId);
-        const peerCall = activeCalls.get(activeCall.with);
-        if (peerCall?.callId === activeCall.callId) {
-          activeCalls.delete(activeCall.with);
+
+      try {
+        const terminatedCalls = await cleanupCallsForSocket({
+          userId,
+          socketId: socket.id,
+        });
+        for (const terminatedCall of terminatedCalls) {
+          const peerTarget =
+            terminatedCall.peerSocketId || terminatedCall.peerUserId;
+          io.to(peerTarget).emit("callEnded", {
+            callId: terminatedCall.callId,
+            by: userId,
+          });
         }
-        io.to(activeCall.peerSocketId).emit("callEnded", {
-          callId: activeCall.callId,
-          by: userId,
+      } catch (error) {
+        console.error("Distributed call cleanup failed", {
+          socketId: socket.id,
+          userId,
+          error,
         });
       }
 
       const sockets = onlineUser.get(userId);
-      if (!sockets) return;
-      sockets.delete(socket.id);
-      if (sockets.size === 0) {
+      sockets?.delete(socket.id);
+      if (sockets?.size === 0) {
         onlineUser.delete(userId);
+      }
+      if (distributedSocketCountAfterDisconnect === 0) {
         const lastActive = new Date();
         await User.updateOne(
           { _id: userId },

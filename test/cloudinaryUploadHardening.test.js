@@ -46,5 +46,9 @@ test("provider failures return stable errors without serializing provider detail
   );
   assert.match(source, /IMAGE_UPLOAD_PROVIDER_FAILED/);
   assert.match(source, /FILE_UPLOAD_PROVIDER_FAILED/);
+  assert.match(source, /runWithConcurrency\(/);
+  assert.match(source, /CLOUDINARY_UPLOAD_CONCURRENCY/);
+  assert.match(source, /module\.exports\.uploadImages/);
+  assert.match(source, /Partial image upload cleanup failed/);
   assert.doesNotMatch(source, /json\(\{\s*message:\s*"Upload failed",\s*error/);
 });

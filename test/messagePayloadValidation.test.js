@@ -101,3 +101,27 @@ test("accepts uploaded files only with a cleanup lease id", () => {
 
   assert.equal(result.files[0].cleanup_job_id, cleanupJobId);
 });
+
+test("accepts uploaded image metadata and rejects Base64 image transport", () => {
+  const image = {
+    url: "https://cdn.example/image.webp",
+    public_id: "chat/images/image-1",
+    cleanup_job_id: "507f1f77bcf86cd799439011",
+  };
+  const result = validateMessagePayload({
+    message: "",
+    images: [image],
+    file: [],
+    type: "text",
+  });
+
+  assert.deepEqual(result.images, [image]);
+  assert.throws(() =>
+    validateMessagePayload({
+      message: "",
+      images: ["data:image/png;base64,a"],
+      file: [],
+      type: "image",
+    }),
+  );
+});

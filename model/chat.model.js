@@ -71,6 +71,10 @@ chatSchema.index(
     partialFilterExpression: { clientMessageId: { $type: "string" } },
   },
 );
+chatSchema.index(
+  { room_chat_id: 1, createdAt: -1, _id: -1 },
+  { name: "room_chat_id_1_createdAt_-1__id_-1" },
+);
 // if (mongoose.models.Chat) {
 //   delete mongoose.models.Chat;
 // }
