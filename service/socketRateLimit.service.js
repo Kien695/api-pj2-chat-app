@@ -2,6 +2,7 @@ const { consumeRateLimit } = require("./rateLimit.service");
 
 const SOCKET_RATE_LIMITS = Object.freeze({
   message: { limit: 40, windowSeconds: 10 },
+  receipt: { limit: 120, windowSeconds: 60 },
   typing: { limit: 30, windowSeconds: 10 },
   callStart: { limit: 5, windowSeconds: 60 },
   callAction: { limit: 30, windowSeconds: 60 },

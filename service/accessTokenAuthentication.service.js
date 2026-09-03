@@ -1,6 +1,8 @@
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
+const AuthSession = require("../model/auth-session.model");
 const ACCESS_TOKEN_JTI_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 class AccessTokenAuthenticationError extends Error {
   constructor(code, message, expired = false) {
@@ -50,7 +52,9 @@ const verifyAccessToken = (
       decoded.tokenType !== "access" ||
       !mongoose.isValidObjectId(decoded.id) ||
       typeof decoded.jti !== "string" ||
-      !ACCESS_TOKEN_JTI_PATTERN.test(decoded.jti)
+      !ACCESS_TOKEN_JTI_PATTERN.test(decoded.jti) ||
+      (decoded.sid !== undefined &&
+        (typeof decoded.sid !== "string" || !SESSION_ID_PATTERN.test(decoded.sid)))
     ) {
       throw new AccessTokenAuthenticationError(
         "INVALID_ACCESS_TOKEN",
@@ -74,8 +78,31 @@ const verifyAccessToken = (
   }
 };
 
+const authenticateAccessToken = async (
+  token,
+  sessionModel = AuthSession,
+  now = new Date(),
+) => {
+  const decoded = verifyAccessToken(token);
+  if (!decoded.sid) return decoded;
+  const session = await sessionModel.findOne({
+    userId: decoded.id,
+    sessionId: decoded.sid.toLowerCase(),
+    revokedAt: null,
+    expiresAt: { $gt: now },
+  }).select("_id").lean();
+  if (!session) {
+    throw new AccessTokenAuthenticationError(
+      "ACCESS_SESSION_REVOKED",
+      "Phiên đăng nhập đã hết hạn hoặc bị thu hồi",
+    );
+  }
+  return decoded;
+};
+
 module.exports = {
   AccessTokenAuthenticationError,
+  authenticateAccessToken,
   extractBearerToken,
   verifyAccessToken,
 };

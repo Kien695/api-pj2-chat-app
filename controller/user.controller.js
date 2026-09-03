@@ -5,15 +5,24 @@ const bcryptjs = require("bcryptjs");
 const { randomUUID } = require("crypto");
 const { sendMail } = require("../config/sendMail");
 const { generateAccessToken } = require("../utils/generateAccessToken");
-const { generateRefreshToken } = require("../utils/generateRefreshToken");
+const {
+  issueAuthenticationSession,
+  sessionMetadataFromRequest,
+} = require("../service/authenticationSessionIssuance.service");
 const {
   RefreshTokenError,
   rotateRefreshToken,
 } = require("../service/refreshTokenRotation.service");
 const {
+  revokeAllAuthSessions,
+  revokeAuthSession,
+} = require("../service/authSession.service");
+const {
   clearRefreshCookieOptions,
   refreshCookieOptions,
 } = require("../utils/authCookie");
+const { writeAuthSessionAudit } = require("../utils/authSessionAudit");
+const { getIO } = require("../socket");
 const searchHelper = require("../helper/search");
 const { myDocument } = require("../helper/createMyDocument");
 const { cleanupAssets } = require("../service/cloudinaryAsset.service");
@@ -40,6 +49,10 @@ const {
   getEmailFingerprint,
   writePasswordResetAudit,
 } = require("../utils/passwordResetAudit");
+const {
+  removeAllPushSubscriptions,
+  removePushSubscriptionForLogout,
+} = require("../service/pushSubscription.service");
 const {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -228,8 +241,10 @@ module.exports.login = async (req, res) => {
         message: "Mật khẩu không chính xác!",
       });
     }
-    const accessToken = await generateAccessToken(user._id);
-    const refreshToken = await generateRefreshToken(user._id);
+    const { accessToken, refreshToken } = await issueAuthenticationSession({
+      userId: user._id,
+      metadata: sessionMetadataFromRequest(req, "password"),
+    });
     res.cookie("refreshToken", refreshToken, refreshCookieOptions());
     //tạo my document nếu chưa có
 
@@ -257,13 +272,29 @@ module.exports.login = async (req, res) => {
 module.exports.logout = async (req, res) => {
   try {
     const userId = res.locals.userId;
+    const sessionId = res.locals.sessionId;
     res.clearCookie("refreshToken", clearRefreshCookieOptions());
-    await User.findOneAndUpdate(
-      { _id: userId },
-      {
-        refresh_token: "",
-      },
-    );
+    if (sessionId) {
+      await revokeAuthSession({ userId, sessionId, reason: "logout" });
+      getIO().in(`auth-session:${sessionId}`).disconnectSockets(true);
+      writeAuthSessionAudit("logout", { userId, sessionId });
+    } else {
+      await User.findOneAndUpdate(
+        { _id: userId },
+        { refresh_token: "" },
+      );
+    }
+    try {
+      await removePushSubscriptionForLogout({
+        userId,
+        subscriptionId: req.body?.pushSubscriptionId,
+      });
+    } catch (error) {
+      console.error("Logout push subscription cleanup failed", {
+        userId,
+        error: error?.message,
+      });
+    }
     return res.status(200).json({
       success: true,
       error: false,
@@ -465,6 +496,22 @@ module.exports.resetPassword = async (req, res) => {
     user.refresh_token = "";
     user.access_token = "";
     await user.save();
+    await revokeAllAuthSessions({
+      userId: user._id,
+      reason: "password_reset",
+    });
+    getIO().in(user._id.toString()).disconnectSockets(true);
+
+    let pushSubscriptionsRevoked = true;
+    try {
+      await removeAllPushSubscriptions(user._id);
+    } catch (error) {
+      pushSubscriptionsRevoked = false;
+      console.error("Password reset push subscription cleanup failed", {
+        userId: user._id.toString(),
+        error: error?.message,
+      });
+    }
 
     res.clearCookie("refreshToken", clearRefreshCookieOptions());
 
@@ -472,6 +519,7 @@ module.exports.resetPassword = async (req, res) => {
       outcome: "success",
       userId: user._id.toString(),
       sessionsRevoked: true,
+      pushSubscriptionsRevoked,
     });
 
     return res.status(200).json({
@@ -494,10 +542,10 @@ module.exports.resetPassword = async (req, res) => {
 //refreshToken
 module.exports.refreshToken = async (req, res) => {
   try {
-    const { userId, refreshToken } = await rotateRefreshToken(
+    const { userId, refreshToken, sessionId } = await rotateRefreshToken(
       req.cookies?.refreshToken,
     );
-    const newAccessToken = await generateAccessToken(userId);
+    const newAccessToken = await generateAccessToken(userId, sessionId);
     res.cookie("refreshToken", refreshToken, refreshCookieOptions());
     return res.status(200).json({
       error: false,
@@ -509,6 +557,9 @@ module.exports.refreshToken = async (req, res) => {
     });
   } catch (error) {
     if (error instanceof RefreshTokenError) {
+      if (error.sessionId) {
+        getIO().in(`auth-session:${error.sessionId}`).disconnectSockets(true);
+      }
       res.clearCookie("refreshToken", clearRefreshCookieOptions());
       return res.status(error.status).json({
         message: error.message,
@@ -731,8 +782,10 @@ module.exports.passkeyLoginVerify = async (req, res) => {
     await passkey.save();
     await redis.del(`passkey:${challengeId}`);
 
-    const accessToken = await generateAccessToken(user._id);
-    const refreshToken = await generateRefreshToken(user._id);
+    const { accessToken, refreshToken } = await issueAuthenticationSession({
+      userId: user._id,
+      metadata: sessionMetadataFromRequest(req, "passkey"),
+    });
     res.cookie("refreshToken", refreshToken, refreshCookieOptions());
     //tạo my document nếu chưa có
 

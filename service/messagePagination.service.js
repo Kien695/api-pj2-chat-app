@@ -140,12 +140,62 @@ const getMessagePage = async ({
   const hasMore = rows.length > pageSize;
   const selected = rows.slice(0, pageSize);
   const oldestSelected = selected[selected.length - 1];
+  const newestSelected = selected[0];
 
   return {
     messages: [...selected].reverse(),
     pagination: {
       nextCursor:
         hasMore && oldestSelected ? encodeMessageCursor(oldestSelected) : null,
+      hasMore,
+      limit: pageSize,
+      syncCursor: newestSelected ? encodeMessageCursor(newestSelected) : null,
+    },
+  };
+};
+
+const getMessageCatchUpPage = async ({
+  roomId,
+  cursor,
+  limit,
+  chatModel = Chat,
+}) => {
+  if (typeof roomId !== "string" || !mongoose.Types.ObjectId.isValid(roomId)) {
+    throw new MessagePaginationError(
+      "Phòng chat không hợp lệ",
+      "INVALID_MESSAGE_ROOM",
+    );
+  }
+  if (cursor === undefined || cursor === null || cursor === "") {
+    throw new MessagePaginationError(
+      "Cursor đồng bộ tin nhắn không hợp lệ",
+      "INVALID_MESSAGE_CURSOR",
+    );
+  }
+
+  const pageSize = normalizeMessagePageSize(limit);
+  const boundary = decodeMessageCursor(cursor);
+  const rows = await chatModel
+    .find({
+      room_chat_id: new mongoose.Types.ObjectId(roomId),
+      $or: [
+        { createdAt: { $gt: boundary.createdAt } },
+        { createdAt: boundary.createdAt, _id: { $gt: boundary.id } },
+      ],
+    })
+    .sort({ createdAt: 1, _id: 1 })
+    .limit(pageSize + 1)
+    .populate({ path: "user_id", select: "name avatar " })
+    .populate({ path: "content_user", select: "name avatar " });
+
+  const hasMore = rows.length > pageSize;
+  const messages = rows.slice(0, pageSize);
+  const newestSelected = messages[messages.length - 1];
+
+  return {
+    messages,
+    pagination: {
+      nextCursor: newestSelected ? encodeMessageCursor(newestSelected) : cursor,
       hasMore,
       limit: pageSize,
     },
@@ -158,6 +208,7 @@ module.exports = {
   MessagePaginationError,
   decodeMessageCursor,
   encodeMessageCursor,
+  getMessageCatchUpPage,
   getMessagePage,
   normalizeMessagePageSize,
 };

@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const controller = require("../controller/user.controller");
 const roomController = require("../controller/room.controller");
+const pushSubscriptionController = require("../controller/pushSubscription.controller");
+const authSessionController = require("../controller/authSession.controller");
 const validate = require("../validate/auth.validate");
 const middleware = require("../middleware/auth.middleware");
 const middlewareChat = require("../middleware/chat.middleware");
@@ -35,6 +37,36 @@ router.post(
 router.post("/verify", authRateLimit("verifyEmail"), validate.verifyEmail, controller.verifyEmail);
 router.post("/login", authRateLimit("login"), validate.authLogin, controller.login);
 router.post("/logout", middleware.auth, controller.logout);
+router.get(
+  "/sessions",
+  middleware.auth,
+  restRateLimit("sessionManagement"),
+  authSessionController.list,
+);
+router.delete(
+  "/sessions/others",
+  middleware.auth,
+  restRateLimit("sessionManagement"),
+  authSessionController.revokeOthers,
+);
+router.delete(
+  "/sessions/:sessionId",
+  middleware.auth,
+  restRateLimit("sessionManagement"),
+  authSessionController.revokeOne,
+);
+router.post(
+  "/push-subscriptions",
+  middleware.auth,
+  restRateLimit("pushSubscription"),
+  pushSubscriptionController.register,
+);
+router.delete(
+  "/push-subscriptions/:subscriptionId",
+  middleware.auth,
+  restRateLimit("pushSubscription"),
+  pushSubscriptionController.remove,
+);
 router.post(
   "/forgot-password",
   authRateLimit("forgotPassword"),

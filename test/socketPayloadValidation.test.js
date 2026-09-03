@@ -7,6 +7,7 @@ const {
   SocketPayloadValidationError,
   validateFriendRequestPayload,
   validateFriendTarget,
+  validateMessageReceiptPayload,
   validateMessageRemovalPayload,
   validateRoomActionPayload,
   validateTypingPayload,
@@ -96,12 +97,28 @@ test("validates room and message action payloads", () => {
   );
 });
 
-test("guards join, read, delete and typing before protected work", () => {
+test("validates delivery receipt identifiers", () => {
+  const roomChatId = "507F191E810C19729DE860EA";
+  const messageId = "507F1F77BCF86CD799439012";
+  assert.deepEqual(validateMessageReceiptPayload({ roomChatId, messageId }), {
+    roomChatId: roomChatId.toLowerCase(),
+    messageId: messageId.toLowerCase(),
+  });
+  for (const payload of [null, [], {}, { roomChatId, messageId: { $gt: "" } }]) {
+    assert.throws(
+      () => validateMessageReceiptPayload(payload),
+      SocketPayloadValidationError,
+    );
+  }
+});
+
+test("guards join, receipt, delete and typing before protected work", () => {
   const source = fs.readFileSync(
     path.resolve(__dirname, "../socket/index.js"),
     "utf8",
   );
-  assert.equal(source.match(/validateRoomActionPayload\(payload\)/g)?.length, 2);
+  assert.equal(source.match(/validateRoomActionPayload\(payload\)/g)?.length, 1);
   assert.match(source, /validateMessageRemovalPayload\(payload\)/);
+  assert.equal(source.match(/validateMessageReceiptPayload\(payload\)/g)?.length, 2);
   assert.match(source, /validateTypingPayload\(type\)/);
 });

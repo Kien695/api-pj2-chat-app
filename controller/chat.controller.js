@@ -9,8 +9,12 @@ const MediaCleanupJob = require("../model/media-cleanup-job.model");
 const { sendInternalServerError } = require("../utils/httpErrorResponse");
 const {
   MessagePaginationError,
+  getMessageCatchUpPage,
   getMessagePage,
 } = require("../service/messagePagination.service");
+const {
+  hydrateDeliveredReceipts,
+} = require("../service/messageReceipt.service");
 //get chat
 module.exports.index = async (req, res) => {
   try {
@@ -35,7 +39,11 @@ module.exports.index = async (req, res) => {
       cursor: req.query.cursor,
       limit: req.query.limit,
     });
-    const chats = page.messages;
+    const chats = await hydrateDeliveredReceipts({
+      messages: page.messages,
+      roomId: roomChatId,
+      senderUserId: userId,
+    });
     const pagination = page.pagination;
 
     // 2️ Lấy room chat
@@ -110,6 +118,39 @@ module.exports.index = async (req, res) => {
       });
     }
     return sendInternalServerError(res, error, "Get chat failed");
+  }
+};
+
+module.exports.sync = async (req, res) => {
+  try {
+    const roomChatId = req.params.roomChatId;
+    const userId = res.locals.userId;
+    const page = await getMessageCatchUpPage({
+      roomId: roomChatId,
+      cursor: req.query.cursor,
+      limit: req.query.limit,
+    });
+    const chats = await hydrateDeliveredReceipts({
+      messages: page.messages,
+      roomId: roomChatId,
+      senderUserId: userId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: chats,
+      pagination: page.pagination,
+    });
+  } catch (error) {
+    if (error instanceof MessagePaginationError) {
+      return res.status(error.status).json({
+        success: false,
+        error: true,
+        code: error.code,
+        message: error.message,
+      });
+    }
+    return sendInternalServerError(res, error, "Sync chat failed");
   }
 };
 

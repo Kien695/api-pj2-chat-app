@@ -4,6 +4,11 @@ const {
   claimTimedOutCallIds,
   finalizeTimedOutCall,
 } = require("./callState.service");
+const {
+  recordWorkerRun,
+  recordWorkerStarted,
+  recordWorkerStopped,
+} = require("./workerHealth.service");
 
 const CALL_TIMEOUT_WORKER_INTERVAL_MS = 5_000;
 
@@ -76,9 +81,11 @@ const createCallTimeoutScheduler = ({
     activeRun = (async () => {
       try {
         await runBatch({ io });
+        recordWorkerRun("call_timeout", true);
         return true;
       } catch (error) {
         logger.error("Call timeout worker failed", error);
+        recordWorkerRun("call_timeout", false);
         return false;
       } finally {
         activeRun = null;
@@ -111,12 +118,14 @@ const startCallTimeoutWorker = (io) => {
   if (callTimeoutScheduler) return;
   callTimeoutScheduler = createCallTimeoutScheduler({ io });
   callTimeoutScheduler.start();
+  recordWorkerStarted("call_timeout");
 };
 
 const stopCallTimeoutWorker = async () => {
   if (!callTimeoutScheduler) return;
   await callTimeoutScheduler.stop();
   callTimeoutScheduler = null;
+  recordWorkerStopped("call_timeout");
 };
 
 module.exports = {

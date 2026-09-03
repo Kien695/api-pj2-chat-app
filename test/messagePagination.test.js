@@ -6,6 +6,7 @@ const {
   MessagePaginationError,
   decodeMessageCursor,
   encodeMessageCursor,
+  getMessageCatchUpPage,
   getMessagePage,
   normalizeMessagePageSize,
 } = require("../service/messagePagination.service");
@@ -98,6 +99,11 @@ test("queries one extra row and returns messages from oldest to newest", async (
   assert.equal(page.pagination.hasMore, true);
   assert.equal(page.pagination.limit, 2);
   assert.ok(page.pagination.nextCursor);
+  assert.ok(page.pagination.syncCursor);
+  assert.equal(
+    decodeMessageCursor(page.pagination.syncCursor).id.toString(),
+    ids.third,
+  );
   assert.equal(
     decodeMessageCursor(page.pagination.nextCursor).id.toString(),
     ids.second,
@@ -139,6 +145,60 @@ test("applies both cursor tie-break conditions to the room query", async () => {
   assert.equal(filter.$or[1]._id.$lt.toString(), ids.second);
 });
 
+test("catch-up queries newer messages in stable ascending pages", async () => {
+  const createdAt = new Date("2026-01-02T00:00:00.000Z");
+  const cursor = encodeMessageCursor({ _id: ids.second, createdAt });
+  const rows = [
+    { _id: ids.third, createdAt: new Date("2026-01-03T00:00:00.000Z") },
+  ];
+  const calls = {};
+  const query = {
+    sort(value) {
+      calls.sort = value;
+      return this;
+    },
+    limit(value) {
+      calls.limit = value;
+      return this;
+    },
+    populate() {
+      calls.populate = (calls.populate || 0) + 1;
+      return calls.populate === 2 ? Promise.resolve(rows) : this;
+    },
+  };
+
+  const page = await getMessageCatchUpPage({
+    roomId: ids.room,
+    cursor,
+    limit: 2,
+    chatModel: {
+      find(filter) {
+        calls.filter = filter;
+        return query;
+      },
+    },
+  });
+
+  assert.equal(calls.filter.room_chat_id.toString(), ids.room);
+  assert.equal(calls.filter.$or[0].createdAt.$gt.toISOString(), createdAt.toISOString());
+  assert.equal(calls.filter.$or[1]._id.$gt.toString(), ids.second);
+  assert.deepEqual(calls.sort, { createdAt: 1, _id: 1 });
+  assert.equal(calls.limit, 3);
+  assert.deepEqual(page.messages, rows);
+  assert.equal(page.pagination.hasMore, false);
+  assert.equal(
+    decodeMessageCursor(page.pagination.nextCursor).id.toString(),
+    ids.third,
+  );
+});
+
+test("catch-up requires an opaque starting cursor", async () => {
+  await assert.rejects(
+    getMessageCatchUpPage({ roomId: ids.room }),
+    (error) => error.code === "INVALID_MESSAGE_CURSOR",
+  );
+});
+
 test("chat API always enforces bounded pagination", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "../controller/chat.controller.js"),
@@ -157,5 +217,7 @@ test("chat API always enforces bounded pagination", () => {
   assert.doesNotMatch(indexHandler, /paginationRequested|Backward compatibility/);
   assert.match(indexHandler, /error instanceof MessagePaginationError/);
   assert.match(source, /module\.exports\.create = async/);
+  assert.match(source, /module\.exports\.sync = async/);
+  assert.match(source, /await getMessageCatchUpPage\(/);
   assert.match(source, /Rejected chat upload cleanup failed/);
 });

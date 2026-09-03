@@ -29,6 +29,13 @@ const {
 } = require("../service/friendship.service");
 const { persistMessage } = require("../service/messagePersistence.service");
 const {
+  encodeMessageCursor,
+} = require("../service/messagePagination.service");
+const {
+  MessageReceiptError,
+  recordMessageReceipt,
+} = require("../service/messageReceipt.service");
+const {
   validateMessagePayload,
 } = require("../service/messagePayloadValidation.service");
 const {
@@ -45,6 +52,7 @@ const {
   SocketPayloadValidationError,
   validateFriendRequestPayload,
   validateFriendTarget,
+  validateMessageReceiptPayload,
   validateMessageRemovalPayload,
   validateRoomActionPayload,
   validateTypingPayload,
@@ -63,7 +71,12 @@ const {
   endCall,
   rejectPendingCall,
 } = require("../service/callState.service");
+const {
+  enqueueIncomingCallPush,
+  enqueueMessagePush,
+} = require("../service/pushNotificationQueue.service");
 const app = express();
+const { changeActiveSockets } = require("../service/runtimeMetrics.service");
 
 // socket connection
 const server = http.createServer(app);
@@ -109,16 +122,17 @@ const returnRoomSocketError = (socket, event, error, acknowledgement) => {
   const isAuthorizationError = error instanceof RoomAuthorizationError;
   const isRateLimitError = error instanceof SocketRateLimitError;
   const isValidationError = error instanceof SocketPayloadValidationError;
+  const isReceiptError = error instanceof MessageReceiptError;
   const payload = {
     success: false,
     error: true,
     event,
-    code: isRateLimitError || isValidationError
+    code: isRateLimitError || isValidationError || isReceiptError
       ? error.code
       : isAuthorizationError
         ? error.code
         : "ROOM_OPERATION_FAILED",
-    message: isAuthorizationError
+    message: isAuthorizationError || isReceiptError
       ? error.message
       : "Không thể thực hiện thao tác phòng chat",
   };
@@ -128,7 +142,7 @@ const returnRoomSocketError = (socket, event, error, acknowledgement) => {
     payload.retryAfterSeconds = error.retryAfterSeconds;
   }
   if (isValidationError) payload.message = error.message;
-  if (!isAuthorizationError && !isRateLimitError && !isValidationError) {
+  if (!isAuthorizationError && !isRateLimitError && !isValidationError && !isReceiptError) {
     console.error(`Socket room operation failed: ${event}`, error);
   }
 
@@ -173,6 +187,8 @@ const registerAsyncSocketHandler = (socket, event, handler, onError) => {
 };
 
 io.on("connection", async (socket) => {
+  changeActiveSockets(1);
+  socket.once("disconnect", () => changeActiveSockets(-1));
   try {
     //qr code
     registerAsyncSocketHandler(
@@ -210,9 +226,14 @@ io.on("connection", async (socket) => {
       return;
     }
     const userId = user._id.toString();
+    const authSessionId = user.sessionId || null;
     console.log("User connected:", userId);
 
     socket.join(userId);
+    if (authSessionId) {
+      socket.data.authSessionId = authSessionId;
+      await socket.join(`auth-session:${authSessionId}`);
+    }
     const distributedSocketCount = await upsertPresence({
       userId,
       socketId: socket.id,
@@ -352,6 +373,7 @@ io.on("connection", async (socket) => {
               files: persisted.message.files,
               type: persisted.message.type,
               createdAt: persisted.message.createdAt,
+              syncCursor: encodeMessageCursor(persisted.message),
               unreadCountForUsers,
             };
 
@@ -362,6 +384,17 @@ io.on("connection", async (socket) => {
                   "SERVER_RETURN_SIDEBAR",
                   payload,
                 );
+              });
+              enqueueMessagePush({
+                room: persisted.room,
+                message: persisted.message,
+                sender: user,
+              }).catch((error) => {
+                console.error("Message push enqueue failed", {
+                  roomChatId: authorizedRoomId,
+                  messageId: persisted.message._id,
+                  error: error?.message,
+                });
               });
             }
 
@@ -411,6 +444,50 @@ io.on("connection", async (socket) => {
         );
       }
     });
+    // Delivery receipt. The authenticated socket owns userId and the server owns status.
+    registerAsyncSocketHandler(
+      socket,
+      "CLIENT_MESSAGE_DELIVERED",
+      async (payload, acknowledgement) => {
+        try {
+          const { roomChatId, messageId } =
+            validateMessageReceiptPayload(payload);
+          await enforceSocketRateLimit("receipt", userId);
+          const result = await recordMessageReceipt({
+            roomId: roomChatId,
+            messageId,
+            userId,
+            status: "delivered",
+          });
+
+          if (result.advanced) {
+            const receiptPayload = {
+              roomChatId,
+              messageId,
+              userId,
+              status: "delivered",
+              at: result.receipt.deliveredAt,
+            };
+            io.to(result.message.user_id.toString()).emit(
+              "SERVER_MESSAGE_RECEIPT",
+              receiptPayload,
+            );
+            io.to(userId).emit("SERVER_MESSAGE_RECEIPT", receiptPayload);
+          }
+
+          if (typeof acknowledgement === "function") {
+            acknowledgement({ success: true, advanced: result.advanced });
+          }
+        } catch (error) {
+          returnRoomSocketError(
+            socket,
+            "CLIENT_MESSAGE_DELIVERED",
+            error,
+            acknowledgement,
+          );
+        }
+      },
+    );
     //remove message
     registerAsyncSocketHandler(
       socket,
@@ -589,32 +666,56 @@ io.on("connection", async (socket) => {
       "CLIENT_READ_ROOM",
       async (payload, acknowledgement) => {
         try {
-          const { roomChatId } = validateRoomActionPayload(payload);
-          await requireRoomMember(roomChatId, userId);
+          const { roomChatId, messageId } =
+            validateMessageReceiptPayload(payload);
+          await enforceSocketRateLimit("receipt", userId);
+          const result = await recordMessageReceipt({
+            roomId: roomChatId,
+            messageId,
+            userId,
+            status: "read",
+          });
 
           const updatedRoom = await RoomChat.findOneAndUpdate(
-            { _id: roomChatId, "users.user_id": userId },
+            {
+              _id: roomChatId,
+              "users.user_id": userId,
+              $or: [
+                { "lastMessage.createdAt": { $lte: result.message.createdAt } },
+                { "lastMessage.createdAt": { $exists: false } },
+              ],
+            },
             {
               $set: {
                 [`unreadCount.${userId}`]: 0,
               },
             },
           );
-          if (!updatedRoom) {
-            throw new RoomAuthorizationError(
-              403,
-              "ROOM_ACCESS_DENIED",
-              "Bạn không còn quyền truy cập phòng chat này",
+          if (result.advanced) {
+            const receiptPayload = {
+              roomChatId,
+              messageId,
+              userId,
+              status: "read",
+              at: result.receipt.readAt,
+            };
+            io.to(result.message.user_id.toString()).emit(
+              "SERVER_MESSAGE_RECEIPT",
+              receiptPayload,
             );
+            io.to(userId).emit("SERVER_MESSAGE_RECEIPT", receiptPayload);
           }
 
-          io.to(roomChatId).emit("SERVER_READ_ROOM", {
-            roomChatId,
-            userId,
-          });
+          if (updatedRoom) {
+            io.to(userId).emit("SERVER_READ_ROOM", { roomChatId, userId });
+          }
 
           if (typeof acknowledgement === "function") {
-            acknowledgement({ success: true });
+            acknowledgement({
+              success: true,
+              advanced: result.advanced,
+              unreadReset: Boolean(updatedRoom),
+            });
           }
         } catch (error) {
           returnRoomSocketError(
@@ -661,6 +762,18 @@ io.on("connection", async (socket) => {
         email: user.email,
         profilepic: user.avatar,
         type,
+      });
+      enqueueIncomingCallPush({
+        calleeId,
+        callId,
+        caller: user,
+        type,
+      }).catch((error) => {
+        console.error("Incoming call push enqueue failed", {
+          callId,
+          calleeId,
+          error: error?.message,
+        });
       });
       if (typeof acknowledgement === "function") acknowledgement({ success: true, callId });
     }, (error, args) => returnCallSocketError(socket, "callToUser", error, args));

@@ -1,6 +1,7 @@
 const User = require("../model/user.model");
 const {
-  verifyAccessToken,
+  authenticateAccessToken,
+  extractBearerToken,
 } = require("../service/accessTokenAuthentication.service");
 module.exports.getUserDetail = async (token) => {
   if (!token) {
@@ -9,7 +10,7 @@ module.exports.getUserDetail = async (token) => {
       error: true,
     };
   }
-  const decode = verifyAccessToken(token);
+  const decode = await authenticateAccessToken(extractBearerToken(`Bearer ${token}`));
   if (!decode) {
     return {
       error: true,
@@ -20,6 +21,10 @@ module.exports.getUserDetail = async (token) => {
     const user = await User.findById(decode.id).select(
       "_id name email avatar",
     );
-    return user;
+    if (!user) return null;
+    return {
+      ...user.toObject(),
+      sessionId: decode.sid || null,
+    };
   }
 };

@@ -80,6 +80,18 @@ const validateMessageRemovalPayload = (payload) => {
   };
 };
 
+const validateMessageReceiptPayload = (payload) => {
+  const { roomChatId } = validateRoomActionPayload(payload);
+  return {
+    roomChatId,
+    messageId: validateObjectId(
+      payload.messageId,
+      "INVALID_MESSAGE_ID",
+      "MÃ£ tin nháº¯n khÃ´ng há»£p lá»‡",
+    ),
+  };
+};
+
 const validateTypingPayload = (value) => {
   if (typeof value !== "boolean") {
     invalidPayload("INVALID_TYPING_STATE", "Trạng thái nhập tin không hợp lệ");
@@ -92,6 +104,7 @@ module.exports = {
   SocketPayloadValidationError,
   validateFriendRequestPayload,
   validateFriendTarget,
+  validateMessageReceiptPayload,
   validateMessageRemovalPayload,
   validateObjectId,
   validateRoomActionPayload,

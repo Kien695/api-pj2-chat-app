@@ -6,6 +6,11 @@ const {
   finalizeExpiredPresence,
   isPresenceOnline,
 } = require("./presence.service");
+const {
+  recordWorkerRun,
+  recordWorkerStarted,
+  recordWorkerStopped,
+} = require("./workerHealth.service");
 
 const PRESENCE_CLEANUP_INTERVAL_MS = 30_000;
 
@@ -72,9 +77,11 @@ const createPresenceCleanupScheduler = ({
     activeRun = (async () => {
       try {
         await runBatch({ io });
+        recordWorkerRun("presence_cleanup", true);
         return true;
       } catch (error) {
         logger.error("Presence cleanup worker failed", error);
+        recordWorkerRun("presence_cleanup", false);
         return false;
       } finally {
         activeRun = null;
@@ -107,12 +114,14 @@ const startPresenceCleanupWorker = (io) => {
   if (presenceCleanupScheduler) return;
   presenceCleanupScheduler = createPresenceCleanupScheduler({ io });
   presenceCleanupScheduler.start();
+  recordWorkerStarted("presence_cleanup");
 };
 
 const stopPresenceCleanupWorker = async () => {
   if (!presenceCleanupScheduler) return;
   await presenceCleanupScheduler.stop();
   presenceCleanupScheduler = null;
+  recordWorkerStopped("presence_cleanup");
 };
 
 module.exports = {

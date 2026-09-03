@@ -1,7 +1,10 @@
+const { writeLog } = require("./structuredLogger");
+
 const sendInternalServerError = (res, error, context) => {
-  console.error(context, {
-    name: error?.name,
-    code: error?.code,
+  writeLog("error", "internal_server_error", {
+    requestId: res.locals?.requestId,
+    context,
+    error,
   });
 
   return res.status(500).json({

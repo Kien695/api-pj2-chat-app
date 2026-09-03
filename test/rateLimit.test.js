@@ -104,6 +104,7 @@ test("defines bounded policies for searches, uploads and room mutations", () => 
   assert.equal(REST_RATE_LIMITS.userSearch.limit, 60);
   assert.equal(REST_RATE_LIMITS.profileUpload.limit, 10);
   assert.equal(REST_RATE_LIMITS.chatUpload.limit, 30);
+  assert.equal(REST_RATE_LIMITS.chatSync.limit, 120);
   assert.equal(REST_RATE_LIMITS.roomCreate.limit, 20);
   assert.equal(REST_RATE_LIMITS.roomMutation.limit, 60);
 });

@@ -12,6 +12,12 @@ const controller = require("../controller/chat.controller");
 const middlewareChat = require("../middleware/chat.middleware");
 const { restRateLimit } = require("../middleware/rateLimit.middleware");
 const cloudinary = require("../middleware/uploadCloud.middleware");
+router.get(
+  "/:roomChatId/sync",
+  middlewareChat.isAccess,
+  restRateLimit("chatSync"),
+  controller.sync,
+);
 router.get("/:roomChatId", middlewareChat.isAccess, controller.index);
 router.post(
   "/:roomChatId/images",

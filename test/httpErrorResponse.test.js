@@ -40,9 +40,13 @@ test("internal errors are logged without exposing provider details to clients", 
     success: false,
   });
   assert.equal(JSON.stringify(body).includes("secret-host"), false);
-  assert.deepEqual(logs, [
-    ["Room operation failed", { name: "Error", code: 123 }],
-  ]);
+  assert.equal(logs.length, 1);
+  const logEntry = JSON.parse(logs[0][0]);
+  assert.equal(logEntry.level, "error");
+  assert.equal(logEntry.event, "internal_server_error");
+  assert.equal(logEntry.context, "Room operation failed");
+  assert.deepEqual(logEntry.error, { name: "Error", code: 123 });
+  assert.equal(logs[0][0].includes("secret-host"), false);
 });
 
 test("chat upload does not expose internal error messages", () => {

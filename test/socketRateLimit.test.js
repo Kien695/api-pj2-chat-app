@@ -53,13 +53,14 @@ test("fails open when Redis is unavailable", async () => {
   }
 });
 
-test("guards message, typing and call events in the socket server", () => {
+test("guards message, receipt, typing and call events in the socket server", () => {
   const source = fs.readFileSync(
     path.resolve(__dirname, "../socket/index.js"),
     "utf8",
   );
   assert.match(source, /enforceSocketRateLimit\("message", userId, roomIds\.length\)/);
   assert.match(source, /enforceSocketRateLimit\("typing", userId\)/);
+  assert.match(source, /enforceSocketRateLimit\("receipt", userId\)/);
   assert.match(source, /enforceSocketRateLimit\("callStart", userId\)/);
   assert.equal(
     source.match(/enforceSocketRateLimit\("callAction", userId\)/g)?.length,

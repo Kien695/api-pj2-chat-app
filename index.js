@@ -30,7 +30,16 @@ const {
   startCallTimeoutWorker,
   stopCallTimeoutWorker,
 } = require("./service/callTimeoutWorker.service");
+const {
+  startPushNotificationWorker,
+  stopPushNotificationWorker,
+} = require("./service/pushNotificationQueue.service");
 const port = process.env.PORT;
+const { setShuttingDown } = require("./service/healthCheck.service");
+const {
+  createRequestObservabilityMiddleware,
+} = require("./middleware/requestObservability.middleware");
+const { registerProcessFailureHandlers } = require("./service/processFailure.service");
 
 app.set("trust proxy", 1);
 
@@ -44,6 +53,7 @@ app.use(express.json());
 
 app.use(cookieParser());
 app.use(helmet());
+app.use(createRequestObservabilityMiddleware());
 
 let isShuttingDown = false;
 let socketRedisAdapter = null;
@@ -51,10 +61,12 @@ let socketRedisAdapter = null;
 async function shutdown(signal, exitCode = 0) {
   if (isShuttingDown) return;
   isShuttingDown = true;
+  setShuttingDown(true);
 
   console.log(`Shutting down server: ${signal}`);
   try {
     await stopCallTimeoutWorker();
+    await stopPushNotificationWorker();
     await stopPresenceCleanupWorker();
     await stopMediaCleanupWorker();
     await shutdownServices({
@@ -92,6 +104,7 @@ async function startServer() {
 
     await listen(server, port);
     startCallTimeoutWorker(getIO());
+    startPushNotificationWorker();
     startPresenceCleanupWorker(getIO());
     startMediaCleanupWorker();
     console.log(`App listening on port ${port}`);
@@ -103,5 +116,6 @@ async function startServer() {
 
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 process.once("SIGINT", () => shutdown("SIGINT"));
+registerProcessFailureHandlers({ shutdown });
 
 startServer();

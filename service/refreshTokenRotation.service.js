@@ -2,6 +2,8 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const User = require("../model/user.model");
+const AuthSession = require("../model/auth-session.model");
+const { writeAuthSessionAudit } = require("../utils/authSessionAudit");
 
 const REFRESH_TOKEN_TTL = "7d";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -22,12 +24,20 @@ const createRefreshToken = (
   userId,
   sign = jwt.sign,
   secret = process.env.JWT_REFRESH_TOKEN,
-) =>
-  sign(
-    { id: userId.toString(), tokenType: "refresh", jti: crypto.randomUUID() },
+  sessionId,
+) => {
+  const payload = {
+    id: userId.toString(),
+    tokenType: "refresh",
+    jti: crypto.randomUUID(),
+  };
+  if (sessionId) payload.sid = sessionId;
+  return sign(
+    payload,
     secret,
     { algorithm: "HS256", expiresIn: REFRESH_TOKEN_TTL },
   );
+};
 
 const issueRefreshToken = async (userId, userModel = User) => {
   const token = createRefreshToken(userId);
@@ -57,7 +67,9 @@ const verifyRefreshToken = (
       decoded.tokenType !== "refresh" ||
       !mongoose.isValidObjectId(decoded.id) ||
       typeof decoded.jti !== "string" ||
-      !UUID_PATTERN.test(decoded.jti)
+      !UUID_PATTERN.test(decoded.jti) ||
+      (decoded.sid !== undefined &&
+        (typeof decoded.sid !== "string" || !UUID_PATTERN.test(decoded.sid)))
     ) {
       throw new RefreshTokenError("INVALID_REFRESH_TOKEN", "Refresh token không hợp lệ");
     }
@@ -71,9 +83,61 @@ const verifyRefreshToken = (
   }
 };
 
-const rotateRefreshToken = async (token, userModel = User) => {
+const rotateRefreshToken = async (
+  token,
+  userModel = User,
+  sessionModel = AuthSession,
+  now = new Date(),
+) => {
   const decoded = verifyRefreshToken(token);
-  const replacement = createRefreshToken(decoded.id);
+  const replacement = createRefreshToken(
+    decoded.id,
+    jwt.sign,
+    process.env.JWT_REFRESH_TOKEN,
+    decoded.sid,
+  );
+  if (decoded.sid) {
+    const session = await sessionModel.findOneAndUpdate(
+      {
+        userId: decoded.id,
+        sessionId: decoded.sid.toLowerCase(),
+        refreshTokenHash: hashRefreshToken(token),
+        revokedAt: null,
+        expiresAt: { $gt: now },
+      },
+      {
+        $set: {
+          refreshTokenHash: hashRefreshToken(replacement),
+          lastUsedAt: now,
+        },
+      },
+      { new: true, projection: { _id: 1 } },
+    );
+    if (!session) {
+      await sessionModel.updateOne(
+        { userId: decoded.id, sessionId: decoded.sid.toLowerCase(), revokedAt: null },
+        { $set: { revokedAt: now, revokeReason: "refresh_replay" } },
+      );
+      writeAuthSessionAudit("refresh_replay", {
+        outcome: "revoked",
+        userId: decoded.id,
+        sessionId: decoded.sid,
+      });
+      const replayError = new RefreshTokenError(
+        "REFRESH_TOKEN_REPLAYED_OR_REVOKED",
+        "Phiên đăng nhập đã bị thu hồi hoặc token đã được sử dụng",
+      );
+      replayError.userId = decoded.id;
+      replayError.sessionId = decoded.sid;
+      throw replayError;
+    }
+    return {
+      userId: decoded.id,
+      refreshToken: replacement,
+      sessionId: decoded.sid,
+    };
+  }
+
   const user = await userModel.findOneAndUpdate(
     { _id: decoded.id, refresh_token: hashRefreshToken(token) },
     { $set: { refresh_token: hashRefreshToken(replacement) } },
@@ -85,7 +149,7 @@ const rotateRefreshToken = async (token, userModel = User) => {
       "Phiên đăng nhập đã bị thu hồi hoặc token đã được sử dụng",
     );
   }
-  return { userId: decoded.id, refreshToken: replacement };
+  return { userId: decoded.id, refreshToken: replacement, sessionId: undefined };
 };
 
 module.exports = {

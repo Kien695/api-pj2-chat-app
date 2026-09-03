@@ -1,6 +1,11 @@
 const MediaCleanupJob = require("../model/media-cleanup-job.model");
 const Chat = require("../model/chat.model");
 const { cleanupAssets } = require("./cloudinaryAsset.service");
+const {
+  recordWorkerRun,
+  recordWorkerStarted,
+  recordWorkerStopped,
+} = require("./workerHealth.service");
 
 const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 const WORKER_INTERVAL_MS = 30 * 1000;
@@ -110,9 +115,11 @@ const createMediaCleanupScheduler = ({
     activeRun = (async () => {
       try {
         await runDrain();
+        recordWorkerRun("media_cleanup", true);
         return true;
       } catch (error) {
         logger.error("Media cleanup worker failed", error);
+        recordWorkerRun("media_cleanup", false);
         return false;
       } finally {
         activeRun = null;
@@ -158,12 +165,14 @@ const enqueueMediaCleanup = async (assets) => {
 
 const startMediaCleanupWorker = () => {
   getMediaCleanupScheduler().start();
+  recordWorkerStarted("media_cleanup");
 };
 
 const stopMediaCleanupWorker = async () => {
   if (!mediaCleanupScheduler) return;
   await mediaCleanupScheduler.stop();
   mediaCleanupScheduler = null;
+  recordWorkerStopped("media_cleanup");
 };
 
 module.exports = {

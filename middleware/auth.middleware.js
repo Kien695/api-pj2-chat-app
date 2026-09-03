@@ -1,15 +1,16 @@
 const {
   AccessTokenAuthenticationError,
   extractBearerToken,
-  verifyAccessToken,
+  authenticateAccessToken,
 } = require("../service/accessTokenAuthentication.service");
 
-module.exports.auth = (req, res, next) => {
+module.exports.auth = async (req, res, next) => {
   try {
     const token = extractBearerToken(req.headers?.authorization);
-    const decoded = verifyAccessToken(token);
+    const decoded = await authenticateAccessToken(token);
 
     res.locals.userId = decoded.id;
+    res.locals.sessionId = decoded.sid || null;
     next();
   } catch (error) {
     const authenticationError =

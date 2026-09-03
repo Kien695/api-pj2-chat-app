@@ -1,6 +1,8 @@
 const crypto = require("crypto");
-const { generateRefreshToken } = require("../utils/generateRefreshToken");
-const { generateAccessToken } = require("../utils/generateAccessToken");
+const {
+  issueAuthenticationSession,
+  sessionMetadataFromRequest,
+} = require("../service/authenticationSessionIssuance.service");
 const redis = require("../config/redis");
 const { getIO } = require("../socket");
 const { myDocument } = require("../helper/createMyDocument");
@@ -18,6 +20,7 @@ const {
   requireQrActor,
   validateQrSessionId,
 } = require("../service/qrSessionSecurity.service");
+const { writeLog } = require("../utils/structuredLogger");
 const sendQrSecurityError = (res, error) => {
   if (!(error instanceof QrSessionSecurityError)) return false;
   res.status(error.status).json({
@@ -39,7 +42,7 @@ module.exports.login = async (req, res) => {
       `${process.env.CLIENT_URL}/auth-success?code=${encodeURIComponent(loginCode)}`,
     );
   } catch (error) {
-    console.log("Google OAuth Error:", error);
+    writeLog("error", "oauth_login_failed", { error });
     res.redirect(`${process.env.CLIENT_URL}/login?error=oauth_failed`);
   }
 };
@@ -85,7 +88,6 @@ module.exports.createQr = async (req, res) => {
 module.exports.scanQR = async (req, res) => {
   try {
     const sessionId = validateQrSessionId(req.body.sessionId);
-    console.log("Scanned QR SessionId:", sessionId);
     const data = await redis.get(qrKey(sessionId));
 
     if (!data) {
@@ -108,7 +110,10 @@ module.exports.scanQR = async (req, res) => {
 
     qr.status = "scanned";
     qr.userId = res.locals.userId;
-    console.log("Scanned by User:", res.locals.userId);
+    writeLog("info", "qr_login_scanned", {
+      requestId: res.locals.requestId,
+      outcome: "success",
+    });
 
     await redis.set(qrKey(sessionId), JSON.stringify(qr), {
       EX: 60,
@@ -142,8 +147,10 @@ module.exports.scanQR = async (req, res) => {
 module.exports.exchangeOAuthCode = async (req, res) => {
   try {
     const ticket = await consumeOAuthLoginTicket(req.body?.code);
-    const accessToken = await generateAccessToken(ticket.userId);
-    const refreshToken = await generateRefreshToken(ticket.userId);
+    const { accessToken, refreshToken } = await issueAuthenticationSession({
+      userId: ticket.userId,
+      metadata: sessionMetadataFromRequest(req, "google"),
+    });
     res.cookie("refreshToken", refreshToken, refreshCookieOptions());
     return res.status(200).json({
       success: true,
@@ -194,8 +201,12 @@ module.exports.confirm = async (req, res) => {
 
     qr.status = "approved";
 
-    const accessToken = await generateAccessToken(qr.userId);
-    const refreshToken = await generateRefreshToken(qr.userId);
+    const { accessToken, refreshToken } = await issueAuthenticationSession({
+      userId: qr.userId,
+      metadata: sessionMetadataFromRequest(req, "qr", {
+        deviceInfo: qr.deviceInfo,
+      }),
+    });
     res.cookie("refreshToken", refreshToken, refreshCookieOptions());
 
     const document = await myDocument(qr.userId);
