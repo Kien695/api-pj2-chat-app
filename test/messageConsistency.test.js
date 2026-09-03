@@ -84,6 +84,21 @@ test("frontend retries a bounded message outbox with stable client message ids",
   assert.match(source, /item\.deliveryStatus === "queued"/);
 });
 
+test("frontend scrolls new messages without interrupting history reading", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../../chat-app/src/Page/ChatDetail/index.jsx"),
+    "utf8",
+  );
+  assert.match(source, /isNearBottomRef/);
+  assert.match(source, /distanceFromBottom < 120/);
+  assert.match(source, /setNewMessageCount\(\(count\) => count \+ 1\)/);
+  assert.match(source, /Có tin nhắn mới/);
+  assert.match(source, /senderId === state\._id \|\| isNearBottomRef\.current/);
+  assert.match(source, /pendingScrollRestoreRef/);
+  assert.match(source, /ResizeObserver/);
+  assert.match(source, /onLoad=\{handleMessageMediaLoad\}/);
+});
+
 test("frontend acknowledges and renders server-owned delivery receipts", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "../../chat-app/src/Page/ChatDetail/index.jsx"),

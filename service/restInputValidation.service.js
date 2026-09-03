@@ -1,5 +1,6 @@
 const OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i;
 const MAX_SEARCH_KEYWORD_LENGTH = 254;
+const MAX_MESSAGE_SEARCH_KEYWORD_LENGTH = 100;
 const MAX_ROOM_TITLE_LENGTH = 100;
 const MAX_ROOM_MEMBERS = 100;
 
@@ -22,6 +23,21 @@ const validateSearchKeyword = (value) => {
   const keyword = value.trim();
   if (!keyword || keyword.length > MAX_SEARCH_KEYWORD_LENGTH || /[\u0000-\u001f\u007f]/.test(keyword)) {
     invalidInput("INVALID_SEARCH_KEYWORD", "Từ khóa tìm kiếm không hợp lệ");
+  }
+  return keyword;
+};
+
+const validateMessageSearchKeyword = (value) => {
+  if (typeof value !== "string") {
+    invalidInput("INVALID_MESSAGE_SEARCH_KEYWORD", "Từ khóa tìm tin nhắn không hợp lệ");
+  }
+  const keyword = value.trim().normalize("NFC");
+  if (
+    keyword.length < 2 ||
+    keyword.length > MAX_MESSAGE_SEARCH_KEYWORD_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(keyword)
+  ) {
+    invalidInput("INVALID_MESSAGE_SEARCH_KEYWORD", "Từ khóa phải có từ 2 đến 100 ký tự");
   }
   return keyword;
 };
@@ -86,11 +102,13 @@ const validateRemoveMemberPayload = (body) => {
 
 module.exports = {
   MAX_ROOM_MEMBERS,
+  MAX_MESSAGE_SEARCH_KEYWORD_LENGTH,
   MAX_ROOM_TITLE_LENGTH,
   MAX_SEARCH_KEYWORD_LENGTH,
   RestInputValidationError,
   validateAddMembersPayload,
   validateCreateRoomPayload,
+  validateMessageSearchKeyword,
   validateRemoveMemberPayload,
   validateRoomTitle,
   validateSearchKeyword,

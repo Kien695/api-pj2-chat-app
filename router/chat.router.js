@@ -11,7 +11,23 @@ const {
 const controller = require("../controller/chat.controller");
 const middlewareChat = require("../middleware/chat.middleware");
 const { restRateLimit } = require("../middleware/rateLimit.middleware");
+const {
+  validateMessageSearch,
+} = require("../middleware/restInputValidation.middleware");
 const cloudinary = require("../middleware/uploadCloud.middleware");
+router.get(
+  "/:roomChatId/search",
+  middlewareChat.isAccess,
+  restRateLimit("messageSearch"),
+  validateMessageSearch,
+  controller.search,
+);
+router.get(
+  "/:roomChatId/messages/:messageId/context",
+  middlewareChat.isAccess,
+  restRateLimit("messageSearch"),
+  controller.context,
+);
 router.get(
   "/:roomChatId/sync",
   middlewareChat.isAccess,

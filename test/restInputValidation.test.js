@@ -5,6 +5,7 @@ const {
   RestInputValidationError,
   validateAddMembersPayload,
   validateCreateRoomPayload,
+  validateMessageSearchKeyword,
   validateRemoveMemberPayload,
   validateRoomTitle,
   validateSearchKeyword,
@@ -22,6 +23,13 @@ test("normalizes bounded search keywords and escapes regex syntax", () => {
 test("rejects non-string, empty, control and oversized search keywords", () => {
   for (const value of [null, {}, [], "   ", "bad\u0000value", "x".repeat(255)]) {
     assert.throws(() => validateSearchKeyword(value), RestInputValidationError);
+  }
+});
+
+test("normalizes a bounded Unicode message search keyword", () => {
+  assert.equal(validateMessageSearchKeyword("  Tiếng Việt  "), "Tiếng Việt");
+  for (const value of [null, " ", "a", "x".repeat(101), "bad\u0000value", { $ne: "" }]) {
+    assert.throws(() => validateMessageSearchKeyword(value), RestInputValidationError);
   }
 });
 

@@ -15,6 +15,50 @@ const {
 const {
   hydrateDeliveredReceipts,
 } = require("../service/messageReceipt.service");
+const {
+  MessageSearchError,
+  getMessageContext,
+  searchRoomMessages,
+} = require("../service/messageSearch.service");
+
+const sendMessageSearchError = (res, error) => {
+  if (!(error instanceof MessageSearchError)) return false;
+  res.status(error.status).json({
+    success: false,
+    error: true,
+    code: error.code,
+    message: error.message,
+  });
+  return true;
+};
+
+module.exports.search = async (req, res) => {
+  try {
+    const result = await searchRoomMessages({
+      roomId: req.params.roomChatId,
+      keyword: req.query.q,
+      cursor: req.query.cursor,
+      limit: req.query.limit,
+    });
+    return res.status(200).json({ success: true, data: result.messages, total: result.total, pagination: result.pagination });
+  } catch (error) {
+    if (sendMessageSearchError(res, error)) return;
+    return sendInternalServerError(res, error, "Search room messages failed");
+  }
+};
+
+module.exports.context = async (req, res) => {
+  try {
+    const result = await getMessageContext({
+      roomId: req.params.roomChatId,
+      messageId: req.params.messageId,
+    });
+    return res.status(200).json({ success: true, data: result.messages, targetMessageId: result.targetMessageId });
+  } catch (error) {
+    if (sendMessageSearchError(res, error)) return;
+    return sendInternalServerError(res, error, "Get message context failed");
+  }
+};
 //get chat
 module.exports.index = async (req, res) => {
   try {

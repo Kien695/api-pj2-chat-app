@@ -2,6 +2,7 @@ const {
   RestInputValidationError,
   validateAddMembersPayload,
   validateCreateRoomPayload,
+  validateMessageSearchKeyword,
   validateRemoveMemberPayload,
   validateRoomTitle,
   validateSearchKeyword,
@@ -25,6 +26,11 @@ const handleValidation = (validate, assign) => (req, res, next) => {
 const validateUserSearch = handleValidation(
   (req) => validateSearchKeyword(req.query.keyword),
   (req, keyword) => { req.query.keyword = keyword; },
+);
+
+const validateMessageSearch = handleValidation(
+  (req) => validateMessageSearchKeyword(req.query.q),
+  (req, keyword) => { req.query.q = keyword; },
 );
 
 const validateCreateRoom = handleValidation(
@@ -52,6 +58,7 @@ const validateRoomEdit = handleValidation(
 module.exports = {
   validateAddMembers,
   validateCreateRoom,
+  validateMessageSearch,
   validateRemoveMember,
   validateRoomEdit,
   validateUserSearch,

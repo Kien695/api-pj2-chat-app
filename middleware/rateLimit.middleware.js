@@ -21,6 +21,7 @@ const REST_RATE_LIMITS = Object.freeze({
   profileUpload: { limit: 10, windowSeconds: 10 * 60 },
   chatUpload: { limit: 30, windowSeconds: 10 * 60 },
   chatSync: { limit: 120, windowSeconds: 60 },
+  messageSearch: { limit: 60, windowSeconds: 60 },
   pushSubscription: { limit: 30, windowSeconds: 10 * 60 },
   sessionManagement: { limit: 30, windowSeconds: 10 * 60 },
   roomCreate: { limit: 20, windowSeconds: 60 * 60 },

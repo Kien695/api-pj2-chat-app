@@ -8,6 +8,7 @@ const {
   createMessagePushPayload,
   notifyIncomingCall,
   notifyMessageRecipients,
+  validatePushNotificationConfig,
 } = require("../service/pushNotification.service");
 const { encryptSubscription } = require("../service/pushSubscription.service");
 
@@ -35,6 +36,22 @@ test("configures VAPID only from complete validated server configuration", () =>
   );
   assert.deepEqual(configured, ["mailto:admin@example.test", "public", "private"]);
   assert.throws(() => configureWebPush({}, provider), /are required/);
+  assert.deepEqual(
+    validatePushNotificationConfig({
+      PUSH_VAPID_SUBJECT: "https://example.test/push",
+      PUSH_VAPID_PUBLIC_KEY: "public",
+      PUSH_VAPID_PRIVATE_KEY: "private",
+    }),
+    { subject: "https://example.test/push", publicKey: "public", privateKey: "private" },
+  );
+  assert.throws(
+    () => validatePushNotificationConfig({
+      PUSH_VAPID_SUBJECT: "admin@example.test",
+      PUSH_VAPID_PUBLIC_KEY: "public",
+      PUSH_VAPID_PRIVATE_KEY: "private",
+    }),
+    /mailto: or https:\/\//,
+  );
 });
 
 test("message push payload contains routing metadata but no message content", () => {

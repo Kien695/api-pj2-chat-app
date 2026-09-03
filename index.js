@@ -40,6 +40,9 @@ const {
   createRequestObservabilityMiddleware,
 } = require("./middleware/requestObservability.middleware");
 const { registerProcessFailureHandlers } = require("./service/processFailure.service");
+const {
+  validatePushNotificationConfig,
+} = require("./service/pushNotification.service");
 
 app.set("trust proxy", 1);
 
@@ -90,6 +93,7 @@ async function startServer() {
       throw new Error("PORT environment variable is required");
     }
     validateAuthenticationConfig();
+    validatePushNotificationConfig();
 
     await database.connect();
     await ensureCriticalDatabaseIndexes();

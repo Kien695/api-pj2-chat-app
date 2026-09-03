@@ -4,10 +4,7 @@ const { decryptSubscription, getEncryptionKey } = require("./pushSubscription.se
 
 const PUSH_CONCURRENCY = 20;
 
-const configureWebPush = (
-  environment = process.env,
-  provider = webPush,
-) => {
+const validatePushNotificationConfig = (environment = process.env) => {
   const subject = environment.PUSH_VAPID_SUBJECT;
   const publicKey = environment.PUSH_VAPID_PUBLIC_KEY;
   const privateKey = environment.PUSH_VAPID_PRIVATE_KEY;
@@ -17,6 +14,14 @@ const configureWebPush = (
   if (!/^(mailto:|https:\/\/)/.test(subject)) {
     throw new Error("PUSH_VAPID_SUBJECT must use mailto: or https://");
   }
+  return { subject, publicKey, privateKey };
+};
+
+const configureWebPush = (
+  environment = process.env,
+  provider = webPush,
+) => {
+  const { subject, publicKey, privateKey } = validatePushNotificationConfig(environment);
   provider.setVapidDetails(subject, publicKey, privateKey);
   return provider;
 };
@@ -163,4 +168,5 @@ module.exports = {
   createMessagePushPayload,
   notifyIncomingCall,
   notifyMessageRecipients,
+  validatePushNotificationConfig,
 };
