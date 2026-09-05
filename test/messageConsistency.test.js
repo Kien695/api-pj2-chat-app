@@ -77,7 +77,10 @@ test("frontend retries a bounded message outbox with stable client message ids",
   assert.match(source, /const MAX_MESSAGE_OUTBOX_SIZE = 100/);
   assert.match(source, /messageOutboxRef\.current\.set\(clientMessageId, entry\)/);
   assert.match(source, /payload: \{ \.\.\.payload, clientMessageId \}/);
-  assert.match(source, /socket\.timeout\(MESSAGE_ACK_TIMEOUT_MS\)\.emit/);
+  assert.match(
+    source,
+    /socket\s*\.timeout\(MESSAGE_ACK_TIMEOUT_MS\)\s*\.emit/,
+  );
   assert.match(source, /socket\.on\("connect", flushMessageOutbox\)/);
   assert.match(source, /socket\.on\("disconnect", queueInFlightMessages\)/);
   assert.match(source, /entry\.attempt \+= 1/);
